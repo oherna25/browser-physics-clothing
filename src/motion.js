@@ -2,7 +2,7 @@
 // Plain code with no rendering imports: the node test drives it frame by frame.
 
 import { MOTIONS, MOTION_BLEND, VIEW } from './presets.js';
-import { STAND, feetOf } from './pose.js';
+import { STAND, feetOf, bendToes } from './pose.js';
 
 const DEG = Math.PI / 180, G = 9.8;
 const LEG = ['hip', 'knee', 'ankle'], ARM = ['shoulder', 'elbow'];
@@ -41,7 +41,7 @@ function grid(v) {
 }
 const FIX_GRID = 600;
 
-const zeroPose = () => ({ root: { y: 0, z: 0, pitch: 0 }, ...Object.fromEntries([...LEG, ...ARM].flatMap((j) => [[j + 'L', 0], [j + 'R', 0]])) });
+const zeroPose = () => ({ root: { y: 0, z: 0, pitch: 0 }, ...Object.fromEntries([...LEG, 'toe', ...ARM].flatMap((j) => [[j + 'L', 0], [j + 'R', 0]])) });
 
 function buildCycle(def, rig) {
   const curves = Object.fromEntries([...LEG, ...ARM].map((j) => [j, periodic(def[j])]));
@@ -60,7 +60,7 @@ function buildCycle(def, rig) {
     const s = k ? 'R' : 'L', ankle = pose['ankle' + s], knee = pose['knee' + s];
     const gap = (d) => {
       pose['ankle' + s] = ankle + Math.min(d, 0); pose['knee' + s] = knee + Math.max(d, 0);
-      const f = feetOf(rig, pose, F);
+      const f = feetOf(rig, pose, F, true);
       return f.low[k] - f.low[1 - k];
     };
     let d;
@@ -124,7 +124,7 @@ function buildJump(def, rig) {
     return pose;
   };
   const F = { low: [0, 0], z: 0 }, scratch = zeroPose();
-  const height = (c) => -Math.min(...feetOf(rig, family(c, scratch), F).low); // root y with the feet on the floor
+  const height = (c) => -Math.min(...feetOf(rig, family(c, scratch), F, true).low); // root y with the feet on the floor
   for (let c = -1; c < 1; c += 0.01) {
     if (!(height(c + 0.01) < height(c))) throw new Error(`jump: root height does not fall with the crouch at c ${c.toFixed(2)}`);
   }
@@ -183,16 +183,17 @@ const smooth = (a) => a * a * (3 - 2 * a);
 /**
  * The pose of motion m at time t with amplitude a in 0..1: joint angles scale with a, then the root drops the
  * lower foot onto the floor (y = 0), rises by the flight above it, and for a planted motion slides so the ankles
- * keep their rest z. At a = 0 this is STAND, whose feet rest a few millimetres up, so that gap fades with a.
+ * keep their rest z. At a = 0 this is STAND, whose feet rest a few millimetres up, so that gap fades with a. The
+ * foot stands on its ball and heel, and the toes bend up as far as the floor makes them.
  */
 export function motionPose(rig, m, t, a = 1) {
   const { pose, lift } = m.sample(t);
   for (const k of Object.keys(pose)) if (k !== 'root') pose[k] *= a;
   pose.root.pitch *= a;
-  const F = feetOf(rig, pose), rest = (rig.restFeet ??= feetOf(rig, STAND));
+  const F = feetOf(rig, pose, undefined, true), rest = (rig.restFeet ??= feetOf(rig, STAND, undefined, true));
   pose.root.y = -Math.min(...F.low) + a * lift + (1 - a) * Math.min(...rest.low);
   pose.root.z = m.plant ? rest.z - F.z : 0;
-  return pose;
+  return bendToes(rig, pose);
 }
 
 // Motion state machine. still: STAND exactly, nothing posed. in: amplitude rising. run: full amplitude.

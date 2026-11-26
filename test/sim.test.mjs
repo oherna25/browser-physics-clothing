@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { buildBody, buildTorso, buildHead, buildChokerRest, buildShirtRest, buildSkirt, sweepLimb, ringRadii, SKIRT_OFFSET } from '../src/body.js';
 import { BODIES, BUILD, DEFAULTS, POSE, MOTIONS, SHIRT, SHIRT_STYLES, SHIRT_COLORS, CHOKER, CHOKER_STYLES, CHOKER_COLORS, STOCKING_COLORS } from '../src/presets.js';
-import { makeStocking, makeSkirt, makeShirt, legSkin, STOCKING_BAND, SKIRT_THICKNESS } from '../src/garments.js';
+import { makeStocking, makeSkirt, makeShirt, legSkin, toeSkins, STOCKING_BAND, SKIRT_THICKNESS } from '../src/garments.js';
 import { colourCss } from '../src/colourway.js';
 import { stepCloth, beginGrab, endGrab, computeStretch, nearest, resetCloth, concatSegs, gridIndex, computeNormals, STRIDE } from '../src/cloth.js';
 import { makeRig, track, applyPose, stepSoft, makePose, blendPose, feetOf, STAND, ROOT, BLEND } from '../src/pose.js';
@@ -28,15 +28,16 @@ function report(c, segs) {
 const fmt = (r) => `home ${(r.maxHome * 1000).toFixed(2)}mm  clearance ${(r.minDist * 1000).toFixed(2)}mm  stretch x${r.maxStretch.toFixed(2)}`;
 const run = (c, frames, each) => { for (let f = 0; f < frames; f++) { each?.(f); stepCloth(c, DT); } };
 
-// Captured from buildBody before the thigh and glute modifiers existed: [length, sum, index-weighted sum].
-const UNMODIFIED = { feminine: [702, 151403.078304, 6982649.89408], masculine: [702, 141522.578525, 6496355.27694] };
+// Captured from buildBody before the thigh and glute modifiers existed: [length, sum, index-weighted sum]. Feet
+// re-captured when they gained toes.
+const UNMODIFIED = { feminine: [1422, 1032534.1210122162, 59132722.723137364], masculine: [1422, 608369.9884688768, 33586684.166439496] };
 // Slots 0..8 of every segment, flattened as when a segment was 9 floats; slot 9 is the open flag.
 const legacySlots = (a) => {
   const out = [];
   for (let o = 0; o < a.length; o += STRIDE) for (let k = 0; k < 9; k++) out.push(a[o + k]);
   return out;
 };
-const LEGACY_CAPSULES = 78; // legs and waist as they were before the torso grew; later capsules are appended
+const LEGACY_CAPSULES = 158; // legs and waist as they were before the torso grew; later capsules are appended
 const checksum = (a) => { let s = 0, w = 0; a.forEach((v, i) => { s += v; w += v * ((i % 97) + 1); }); return [a.length, s, w]; };
 
 // Bodies are built once per shape and build; the pose section reuses the garments the earlier sections settled.
@@ -261,7 +262,7 @@ function inward(pos, index, segs) {
 }
 // --- Chest ---
 // Captured from the masculine body before it gained a build slider for the chest: segments, torso skin and two shirts' rest shapes.
-const MASCULINE = { segs: [4260, 6690954.907823465, 318018805.4143096], torso: [18627, 7370.717243687914, 360944.43242050096], tank: [7680, 3116.428964460767, 152514.54777717707], tube: [3264, 1343.579700960152, 65313.26069611008] };
+const MASCULINE = { segs: [5060, 7157802.317767003, 331450915.2203044], torso: [18627, 7370.717243687914, 360944.43242050096], tank: [7680, 3116.428964460767, 152514.54777717707], tube: [3264, 1343.579700960152, 65313.26069611008] };
 {
   const shape = BODIES.feminine, bare = buildBody({ ...shape, chest: undefined });
   // Front (+z) of the union at (x, y): bisect in from outside.
@@ -576,8 +577,8 @@ const MASCULINE = { segs: [4260, 6690954.907823465, 318018805.4143096], torso: [
   // bit for bit, captured from the code before it.
   const POSED = makePose({ root: { y: -0.04, z: 0.03, pitch: 0.15 }, hipL: 0.4, kneeL: 0.5, hipR: -0.2, shoulderL: 0.6, elbowL: 0.7, shoulderR: -0.3 });
   const RIGID = {
-    0.5: { segs: [10230, 37068901.370639496, 1819955192.367254], torso: [34851, 14315.303486065002, 701343.0117014081] },
-    1: { segs: [10970, 34813535.25800363, 1637340599.6114821], torso: [34851, 14352.373351381017, 702988.1029380776] },
+    0.5: { segs: [11030, 37950022.319867425, 1821514599.7489998], torso: [34851, 14315.303486065002, 701343.0117014081] },
+    1: { segs: [11770, 35694656.20723153, 1770249233.6620061], torso: [34851, 14352.373351381017, 702988.1029380776] },
   };
   for (const size of [DEFAULTS.chest, 1]) {
     const body = at(size).body, rig = makeRig(body), skin = track(rig, buildTorso(body).pos, BLEND);
@@ -661,6 +662,128 @@ for (const [id, shape] of Object.entries(BODIES)) for (const build of [0, 1]) {
 }
 assert.ok(crowns.feminine >= 1.74 && crowns.feminine <= 1.76, 'feminine crown outside y 1.74 to 1.76');
 assert.ok(crowns.masculine > crowns.feminine && crowns.masculine <= crowns.feminine + 0.03, 'masculine crown is not slightly above the feminine one');
+
+// --- Feet ---
+// Measured on the drawn skin, the foot's body and its five toes, of the unmodified build. The right foot is read in
+// its own frame: m runs from the inner side (big toe, negative) outward, z from the heel to the toes.
+const footLength = {};
+for (const [id, shape] of Object.entries(BODIES)) {
+  const body = bodyOf(shape, 0, 0), [left, right] = body.legs, x0 = right.atS(0).x, side = Math.sign(x0);
+  const drawn = (leg) => [legSkin(leg), ...toeSkins(leg)], R = drawn(right);
+  const own = [right.body, ...right.toes.map((t) => t.segs)], index = R.map((g) => gridIndex(g.rings, g.segs, true, true, g.startPole));
+  const frame = (pos) => { const q = []; for (let i = 0; i < pos.length; i += 3) if (pos[i + 1] < 0.08) q.push([side * (pos[i] - x0), pos[i + 1], pos[i + 2]]); return q; };
+  const pts = R.flatMap((g) => frame(g.pos)), toes = R.slice(1).map((g) => frame(g.pos));
+  const min = (q, k) => q.reduce((m, p) => Math.min(m, p[k]), Infinity), max = (q, k) => q.reduce((m, p) => Math.max(m, p[k]), -Infinity);
+  const low = min(pts, 1), back = min(pts, 2), L = max(pts, 2) - back, stature = crowns[id];
+  const slice = (z0, z1) => pts.filter((p) => p[2] >= back + z0 * L && p[2] < back + z1 * L), span = (q) => max(q, 0) - min(q, 0);
+  let ball = 0;
+  for (let f = 0.55; f < 0.85; f += 0.008) ball = Math.max(ball, span(slice(f - 0.004, f + 0.004)));
+  const heel = span(slice(0.1, 0.2).filter((p) => p[1] < 0.05));
+  // Arch: the union's sole 15 mm in from either edge of the midfoot, over the union's lowest point, at its highest.
+  let floor = Infinity;
+  for (let o = 0; o < right.segs.length; o += STRIDE) floor = Math.min(floor, right.segs[o + 1] - right.segs[o + 3], right.segs[o + 1] + right.segs[o + 5] - right.segs[o + 3] - right.segs[o + 7]);
+  const sole = (m, z) => { let y = floor - 0.002; while (y < 0.08 && nearest(right.segs, x0 + side * m, y, z, hit).d > 0) y += 0.00025; return y - floor; };
+  const arch = (inner) => {
+    let h = -Infinity;
+    for (let f = 0.35; f < 0.6; f += 0.016) { const q = slice(f - 0.008, f + 0.008); h = Math.max(h, sole(inner ? min(q, 0) + 0.015 : max(q, 0) - 0.015, back + f * L)); }
+    return h;
+  };
+  const inner = arch(true), outer = arch(false);
+  // Each toe's width across its own axis, and its centre across the foot.
+  const width = right.toes.map((t, k) => {
+    const a = t.atS(0), b = t.atS(t.length), l = Math.hypot(b.x - a.x, b.z - a.z), u = (p) => (p[0] * (b.z - a.z) - p[2] * side * (b.x - a.x)) / l;
+    return toes[k].reduce((m, p) => Math.max(m, u(p)), -Infinity) - toes[k].reduce((m, p) => Math.min(m, u(p)), Infinity);
+  });
+  const centre = toes.map((q) => q.reduce((m, p) => m + p[0], 0) / q.length);
+  // Crests: the highest triangle straight above points along the line through each toe 10 mm short of its tip, in
+  // from past the big toe to past the little toe, peaks standing `rise` over the dips on both sides.
+  const along = right.toes.map((t) => t.atS(t.length - 0.01)), [ta, tb] = [along[0], along[4]];
+  const crests = (meshes, rise) => {
+    const tris = [];
+    for (const { pos: p, index: ix } of meshes) for (let t = 0; t < ix.length; t += 3) {
+      const v = [ix[t] * 3, ix[t + 1] * 3, ix[t + 2] * 3];
+      if (v.every((o) => p[o + 2] > 0.1 && p[o + 1] < 0.06)) tris.push(v.map((o) => [p[o], p[o + 1], p[o + 2]]));
+    }
+    const prof = [];
+    for (let k = -10; k <= 110; k++) {
+      const x = ta.x + (tb.x - ta.x) * k / 100, z = ta.z + (tb.z - ta.z) * k / 100;
+      let top = -Infinity;
+      for (const [a, b, c] of tris) {
+        const d = (b[2] - c[2]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[2] - c[2]);
+        const u = ((b[2] - c[2]) * (x - c[0]) + (c[0] - b[0]) * (z - c[2])) / d, v = ((c[2] - a[2]) * (x - c[0]) + (a[0] - c[0]) * (z - c[2])) / d;
+        if (u >= 0 && v >= 0 && u + v <= 1) top = Math.max(top, u * a[1] + v * b[1] + (1 - u - v) * c[1]);
+      }
+      prof.push(top);
+    }
+    let n = 0;
+    for (let i = 1; i < prof.length - 1; i++) {
+      if (!(prof[i] >= prof[i - 1] && prof[i] > prof[i + 1])) continue;
+      let l = i, r = i;
+      while (l > 0 && prof[l - 1] <= prof[i]) l--;
+      while (r < prof.length - 1 && prof[r + 1] <= prof[i]) r++;
+      if (prof[i] - Math.max(Math.min(...prof.slice(l, i + 1)), Math.min(...prof.slice(i, r + 1))) >= rise) n++;
+    }
+    return n;
+  };
+  const st = makeStocking(body, right), skinCrests = crests(R.map((g, k) => ({ pos: g.pos, index: index[k] })), 0.001);
+  const knitCrests = crests([{ pos: st.home, index: st.index }], 0.0003);
+  // Pads: the lowest skin under the heel and the ball, and each toe's, over the lowest skin of all.
+  const pad = (q) => min(q, 1) - low, heelPad = pad(slice(0, 0.25)), ballPad = pad(slice(0.6, 0.8)), toePads = toes.map(pad);
+  // Skin near its capsules, checked at triangle centres where a chord sags furthest, and outside none. Triangles
+  // buried in another part of the foot are hidden and skipped. The foot's body shares the stocking's rings, which
+  // fan out round the back of the heel, so its chords sag further there than the toes'.
+  const off = [0, 0];
+  let flipped = 0;
+  R.forEach((g, k) => {
+    const p = g.pos, others = concatSegs(...own.filter((_, j) => j !== k)), seen = [];
+    for (let t = 0; t < index[k].length; t += 3) {
+      const [a, b, c] = [index[k][t] * 3, index[k][t + 1] * 3, index[k][t + 2] * 3], q = [0, 1, 2].map((d) => (p[a + d] + p[b + d] + p[c + d]) / 3);
+      if (q[1] > 0.08 || nearest(others, ...q, hit).d < 0) continue;
+      seen.push(index[k][t], index[k][t + 1], index[k][t + 2]);
+      off[Math.min(k, 1)] = Math.max(off[Math.min(k, 1)], Math.abs(nearest(own[k], ...q, hit).d));
+    }
+    flipped += inward(p, seen, own[k]);
+  });
+  // Left and right are mirror images: ring i, column j on the right is ring i, column n/2 - j on the left.
+  let mirror = 0;
+  drawn(left).forEach((h, k) => {
+    const g = R[k], n = g.segs;
+    for (let o = 0; o < g.pos.length; o += 3) {
+      const v = o / 3, i = Math.floor(v / n), q = i < g.rings ? (i * n + (((n / 2 - (v % n)) % n) + n) % n) * 3 : o;
+      mirror = Math.max(mirror, Math.abs(g.pos[o] + h.pos[q]), Math.abs(g.pos[o + 1] - h.pos[q + 1]), Math.abs(g.pos[o + 2] - h.pos[q + 2]));
+    }
+  });
+  // The settled stocking's surface clear of the drawn foot and toes, below the ankle: every triangle sampled on a
+  // barycentric grid six to an edge, finer than the grid the rest shape is cleared on.
+  const depths = R.map((g, k) => meshDepth(g.pos, index[k])), grid = [];
+  for (let i = 0; i <= 6; i++) for (let j = 0; i + j <= 6; j++) grid.push([i / 6, j / 6, (6 - i - j) / 6]);
+  run(st, 300);
+  let clear = Infinity;
+  for (let t = 0; t < st.index.length; t += 3) {
+    const v = [st.index[t] * 3, st.index[t + 1] * 3, st.index[t + 2] * 3];
+    if (v.some((o) => st.pos[o + 1] > 0.1)) continue;
+    for (const w of grid) {
+      const q = [0, 1, 2].map((d) => w[0] * st.pos[v[0] + d] + w[1] * st.pos[v[1] + d] + w[2] * st.pos[v[2] + d]);
+      for (const depth of depths) { const d = depth(...q); if (d !== null) clear = Math.min(clear, d); }
+    }
+  }
+  footLength[id] = L;
+  console.log(`\n${id} foot: length ${mm(L)} mm, ${(L / stature * 100).toFixed(1)}% of stature; ball ${(ball / L * 100).toFixed(1)}% and heel ${(heel / L * 100).toFixed(1)}% of the length wide; sole lifted ${mm(inner)} mm on the inner side, ${mm(outer)} mm on the outer`);
+  console.log(`${id} toes: widths ${width.map(mm).join(' / ')} mm, centres ${centre.map(mm).join(' / ')} mm across; crests on the skin ${skinCrests}, on the stocking's rest ${knitCrests}; lowest point over the floor contact: heel ${mm(heelPad)}, ball ${mm(ballPad)}, toes ${toePads.map(mm).join(' / ')} mm`);
+  console.log(`${id} foot skin: ${mm(off[0])} mm off its capsules at most on the body, ${mm(off[1])} mm on the toes, ${flipped} inward triangles, left and right ${mm(mirror)} mm from mirror images; settled stocking's surface ${mm(clear)} mm clear of it`);
+  assert.ok(L / stature > 0.14 && L / stature < 0.16, `${id}: foot length ${(L / stature * 100).toFixed(1)}% of stature, outside 14 to 16%`);
+  assert.ok(ball / L > 0.36 && ball / L < 0.41 && heel / L > 0.24 && heel / L < 0.28, `${id}: ball or heel width out of proportion`);
+  assert.ok(inner > 0.01 && inner < 0.018 && outer < inner / 3, `${id}: the arch does not lift the inner side ${mm(inner)} mm and leave the outer ${mm(outer)} mm`);
+  assert.ok(centre.every((c, k) => k === 0 || c > centre[k - 1]) && width.slice(1).every((w) => width[0] > 1.4 * w), `${id}: the big toe is not innermost and widest`);
+  // The knit is wrapped over the toes' hollows (BUILD.foot.wrap), which covers the toes' tips but smooths the four
+  // smaller toes into one rounded front under it: only the big toe's crest stands out, 2 mm (measured).
+  assert.ok(skinCrests === 5 && knitCrests >= 1, `${id}: ${skinCrests} toe crests on the skin and ${knitCrests} under the stocking`);
+  assert.ok(heelPad < 0.001 && ballPad < 0.001 && toePads.every((d) => d < 0.002), `${id}: heel, ball or toes off the floor`);
+  assert.ok(off[0] < 0.003 && off[1] < 0.0015 && flipped === 0, `${id}: foot skin strays from its capsules or faces inward`);
+  assert.ok(mirror < 1e-5, `${id}: feet are not mirror images`);
+  assert.ok(clear >= 0, `${id}: settled stocking ${mm(clear)} mm under the foot's skin`);
+}
+assert.ok(footLength.masculine > footLength.feminine, 'the masculine foot is not the longer');
 
 for (const [id, shape] of Object.entries(BODIES)) for (const [thigh, glute] of MODS) {
   console.log(`\n== ${id} thigh ${thigh} glute ${glute}`);
@@ -876,8 +999,11 @@ for (const [id, shape] of Object.entries(BODIES)) for (const build of [0, 1]) {
   const body = bodyOf(shape, build, build), kept = garments.get(body);
   const rig = makeRig(body);
   // The mesh sizes main.js draws, so the cost below is the app's.
-  const skins = [...body.legs.map((l) => legSkin(l)), buildTorso(body), ...body.arms.map(armSkin), buildHead(body)];
-  const owners = [...body.legs, BLEND, ...body.arms, ROOT], names = ['left leg', 'right leg', 'torso', 'left arm', 'right arm', 'head'];
+  // The toes come last, so the indices above stay put.
+  const toes = body.legs.flatMap((l, s) => toeSkins(l).map((g, k) => [g, l, `${s ? 'right' : 'left'} toe ${k + 1}`]));
+  const skins = [...body.legs.map((l) => legSkin(l)), buildTorso(body), ...body.arms.map(armSkin), buildHead(body), ...toes.map(([g]) => g)];
+  const owners = [...body.legs, BLEND, ...body.arms, ROOT, ...toes.map(([, l]) => l)];
+  const names = ['left leg', 'right leg', 'torso', 'left arm', 'right arm', 'head', ...toes.map(([, , n]) => n)];
   const live = skins.map((g, m) => track(rig, g.pos, owners[m]));
   const stockings = [makeStocking(body, body.legs[0]), kept.stocking], { skirt, tank: shirt } = kept;
   const cloths = [...stockings, skirt, shirt];
@@ -972,7 +1098,7 @@ for (const [id, shape] of Object.entries(BODIES)) for (const build of [0, 1]) {
 
   // 3. Only the right leg posed: nothing of the left leg moves at all.
   applyPose(rig, cloths, makePose(radians(RIGHT_ONLY)));
-  const leftMoved = Math.max(maxDiff(live[0], skins[0].pos), maxDiff(stockings[0].home, restHome[0]));
+  const leftMoved = Math.max(...[0, 6, 7, 8, 9, 10].map((m) => maxDiff(live[m], skins[m].pos)), maxDiff(stockings[0].home, restHome[0]));
   console.log(`3. right leg posed, left leg skin and stocking home moved ${leftMoved.toExponential(1)} m`);
   assert.ok(leftMoved === 0, `${id}: posing the right leg moved the left leg`);
 
@@ -1081,11 +1207,17 @@ function underSkin(st, depth, rest, segs, keep = () => true, faces = true) {
   }
   return { worst, where };
 }
+const TOE_REST = 0, TOE_HELD = 0.001;
 for (const [id, shape] of Object.entries(BODIES)) {
   const body = bodyOf(shape, 1, 1), leg = body.legs[1], rig = makeRig(body), skin = legSkin(leg), index = gridIndex(skin.rings, skin.segs, true);
   const live = track(rig, skin.pos, leg), st = makeStocking(body, leg), rest = st.home.slice();
   const atRest = underSkin({ ...st, pos: st.home }, meshDepth(skin.pos, index), rest, body.segs);
   console.log(`\n${id} 1: stocking at rest, lowest point of its surface ${mm(atRest.worst)} mm outside the skin, ${atRest.where}: ${need(atRest.worst >= 0, `${id} stocking under the skin at rest ${mm(atRest.worst)} mm`)}`);
+  // The toes are meshes of their own; under any of them is under the skin.
+  const toes = toeSkins(leg), toeIndex = toes.map((g) => gridIndex(g.rings, g.segs, true, true, true)), toeLive = toes.map((g) => track(rig, g.pos, leg));
+  const underToes = (meshes) => { const d = meshes.map((p, k) => meshDepth(p, toeIndex[k])); return (x, y, z) => d.reduce((m, f) => { const v = f(x, y, z); return v === null ? m : m === null ? v : Math.min(m, v); }, null); };
+  const toesRest = underSkin({ ...st, pos: st.home }, underToes(toes.map((g) => g.pos)), rest, body.segs);
+  console.log(`${id} 1: stocking at rest over the toes, lowest point ${mm(toesRest.worst)} mm outside their skin, ${toesRest.where}: ${need(toesRest.worst >= TOE_REST, `${id} stocking under the toes at rest ${mm(toesRest.worst)} mm`)}`);
   // Held poses from the jump: the bottom of the crouch (the foot kept flat) and the pointed foot of the flight.
   const { crouch: C, point: Pt } = MOTIONS.jump, held = {
     crouch: { hipL: C.hip, hipR: C.hip, kneeL: C.knee, kneeR: C.knee, ankleL: C.knee - C.hip + C.lean, ankleR: C.knee - C.hip + C.lean, root: { pitch: C.lean * DEG } },
@@ -1099,6 +1231,14 @@ for (const [id, shape] of Object.entries(BODIES)) {
     const depth = meshDepth(live, index), segs = body.live.segs;
     const vert = underSkin(st, depth, rest, segs, undefined, false), knee = underSkin(st, depth, rest, segs, (y) => y > 0.38 && y < 0.56);
     console.log(`${id} 1 held ${pn}: lowest stocking vertex ${mm(vert.worst)} mm outside the skin, ${vert.where}: ${need(vert.worst >= -3e-4, `${id} ${pn} stocking vertex ${mm(vert.worst)} mm off the skin`)}; lowest point of its surface over the knee ${mm(knee.worst)} mm, ${knee.where}: ${need(knee.worst >= 0, `${id} ${pn} knee surface ${mm(knee.worst)} mm off the skin`)}`);
+    const toeVert = underSkin(st, underToes(toeLive), rest, segs, undefined, false);
+    console.log(`${id} 1 held ${pn}: lowest stocking vertex over the toes ${mm(toeVert.worst)} mm outside their skin, ${toeVert.where}: ${need(toeVert.worst >= TOE_HELD, `${id} ${pn} stocking vertex ${mm(toeVert.worst)} mm under the toes`)}`);
+    if (pn !== 'point') continue;
+    // Planted on the pointed foot, the toes bend up to lie on the floor: every toe's tip on it, none under.
+    const L = body.live.segs, toeSlots = leg.toes.map((t) => t.segs.length / STRIDE);
+    let o = (body.legs[0].segs.length + leg.segs.length) / STRIDE - toeSlots.reduce((a, b) => a + b, 0);
+    const tips = toeSlots.map((n) => { o += n; const q = (o - 1) * STRIDE; return L[q + 1] + L[q + 5] - L[q + 3] - L[q + 7]; });
+    console.log(`${id} 1 held point: toes bent ${(pose.toeR / DEG).toFixed(1)} deg, their tips ${tips.map(mm).join(' / ')} mm over the floor: ${need(pose.toeR > 0 && tips.every((y) => y >= -5e-4 && y <= 0.002), `${id} point toes ${(pose.toeR / DEG).toFixed(1)} deg, tips ${tips.map(mm)} mm`)}`);
   }
   applyPose(rig, [st], STAND);
 }
@@ -1119,7 +1259,7 @@ for (const [id, shape] of Object.entries(BODIES)) for (const build of [0, 1]) {
   console.log(`\n== motion: ${tag}`);
   const body = buildBody(shape, { thigh: build, glute: build }, STOCKING_BAND);
   const rig = makeRig(body);
-  for (const [g, o] of [...body.legs.map((l) => [legSkin(l), l]), [buildTorso(body), BLEND], ...body.arms.map((a) => [armSkin(a), a]), [buildHead(body), ROOT]]) track(rig, g.pos, o);
+  for (const [g, o] of [...body.legs.flatMap((l) => [legSkin(l), ...toeSkins(l)].map((g) => [g, l])), [buildTorso(body), BLEND], ...body.arms.map((a) => [armSkin(a), a]), [buildHead(body), ROOT]]) track(rig, g.pos, o);
   const M = buildMotions(rig);
   const stockings = body.legs.map((l) => makeStocking(body, l)), skirt = makeSkirt(body), shirt = makeShirt(body, SHIRT_STYLES.find((s) => s.id === 'tank'));
   const cloths = [...stockings, skirt, shirt], tethered = [...stockings, shirt];
@@ -1155,7 +1295,7 @@ for (const [id, shape] of Object.entries(BODIES)) for (const build of [0, 1]) {
       const t = k * w.period / 50 + 0.37, a = motionPose(rig, w, t), b = motionPose(rig, w, t + w.period), c = motionPose(rig, w, t + w.period / 2);
       for (const key of Object.keys(a)) if (key !== 'root') per = Math.max(per, Math.abs(a[key] - b[key]));
       for (const key of ['y', 'z', 'pitch']) per = Math.max(per, Math.abs(a.root[key] - b.root[key]));
-      for (const j of ['hip', 'knee', 'ankle', 'shoulder', 'elbow']) mir = Math.max(mir, Math.abs(a[j + 'L'] - c[j + 'R']), Math.abs(a[j + 'R'] - c[j + 'L']));
+      for (const j of ['hip', 'knee', 'ankle', 'toe', 'shoulder', 'elbow']) mir = Math.max(mir, Math.abs(a[j + 'L'] - c[j + 'R']), Math.abs(a[j + 'R'] - c[j + 'L']));
       mir = Math.max(mir, Math.abs(a.root.y - c.root.y), Math.abs(a.root.pitch - c.root.pitch));
     }
     console.log(`walk: ${(2 / w.period).toFixed(2)} steps/s; pose(t) vs pose(t + cycle) ${per.toExponential(1)}: ${need(per < 1e-9, `${tag} walk not periodic ${per}`)}; left vs right half a cycle on ${mir.toExponential(1)}: ${need(mir < 1e-9, `${tag} walk not mirrored ${mir}`)}`);

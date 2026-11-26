@@ -1,6 +1,16 @@
 // Every option the UI offers lives here as plain data. Metres, y up, toes point +z.
 
-// leg: centreline joints [y, z, radius]. heel: capsule ends [y, z, radius].
+// leg: centreline joints [y, z, radius]; past the ankle the line runs down the foot into the second toe and ends on the
+// line through the big and little toes' tips, where the rings over the toes turn to lie.
+// foot: owned by its leg. heel: capsule ends [y, z, radius] from the ankle down to the back of the heel, which it
+// rounds where the rows' ends would leave a notch under the Achilles. rows: one capsule across the foot per
+// interpolated row, [z, inner edge, outer edge, inner top, outer top, inner sole, outer sole], edges measured from
+// the leg's line, so each end's radius is half its height. The inner sole stands higher over the midfoot (the arch),
+// and the last row's tops sit level with the toes' so the stocking does not step down onto them. toes: big toe
+// first, each a chain of capsule ends [out, y, z, r], `out` measured from the leg's line toward the outer side. The
+// masculine tables are the feminine ones scaled about the ankle: lengths by 1.043, heights by 1.05, widths by 1.07.
+// knit: the stocking's ring pitch along the leg down to the foot, which takes its own rings about as far apart, so
+// reshaping the foot leaves the leg's rings where they are.
 // pelvis, glutes, waist: capsule pairs [[x, y, z, r], [x, y, z, r]], addressed by name so
 // the thigh and glute modifiers never depend on array order. trunk: crotch, ring centre z and the
 // height where skin rings stop running horizontally and fan upward over the shoulders.
@@ -43,12 +53,37 @@ export const BODIES = {
       [0.240, -0.006, 0.046],
       [0.150, -0.002, 0.036],
       [0.095, 0.006, 0.034], // ankle
-      [0.058, 0.040, 0.032],
-      [0.036, 0.095, 0.027], // ball of foot
-      [0.026, 0.150, 0.020], // toe
+      [0.056, 0.042, 0.027],
+      [0.022, 0.105, 0.011],
+      [0.0135, 0.1768, 0.002], // in the second toe, on the line through the big and little toes' tips
     ],
-    heel: [[0.095, 0.006, 0.033], [0.040, -0.026, 0.034]],
+    foot: {
+      heel: [[0.095, 0.006, 0.032], [0.044, -0.028, 0.030]],
+      rows: [
+        [-0.024, 0.029, 0.029, 0.062, 0.062, 0.006, 0.006],
+        [-0.018, 0.033, 0.033, 0.066, 0.066, 0.006, 0.006],
+        [-0.006, 0.032, 0.034, 0.072, 0.066, 0.007, 0.006],
+        [0.012, 0.030, 0.035, 0.076, 0.062, 0.010, 0.006],
+        [0.030, 0.030, 0.038, 0.075, 0.052, 0.013, 0.007],
+        [0.054, 0.032, 0.042, 0.072, 0.047, 0.016, 0.008],
+        [0.072, 0.036, 0.046, 0.066, 0.042, 0.016, 0.008],
+        [0.090, 0.041, 0.050, 0.057, 0.037, 0.012, 0.007],
+        [0.102, 0.045, 0.052, 0.051, 0.034, 0.009, 0.006],
+        [0.114, 0.046, 0.050, 0.046, 0.030, 0.006, 0.006],
+        [0.126, 0.044, 0.045, 0.041, 0.026, 0.006, 0.007],
+        [0.138, 0.041, 0.040, 0.036, 0.023, 0.007, 0.008],
+        [0.150, 0.037, 0.022, 0.032, 0.021, 0.008, 0.009],
+      ],
+      toes: [
+        [[-0.0250, 0.0210, 0.1240, 0.0135], [-0.0210, 0.0185, 0.1660, 0.0120], [-0.0185, 0.0165, 0.1890, 0.0105]],
+        [[-0.0020, 0.0190, 0.1220, 0.0090], [-0.0010, 0.0160, 0.1570, 0.0078], [0.0000, 0.0128, 0.1845, 0.0062]],
+        [[0.0140, 0.0180, 0.1170, 0.0088], [0.0130, 0.0150, 0.1520, 0.0074], [0.0115, 0.0125, 0.1775, 0.0060]],
+        [[0.0285, 0.0170, 0.1110, 0.0084], [0.0255, 0.0145, 0.1440, 0.0070], [0.0230, 0.0120, 0.1660, 0.0057]],
+        [[0.0420, 0.0160, 0.1040, 0.0080], [0.0375, 0.0135, 0.1330, 0.0066], [0.0345, 0.0115, 0.1540, 0.0054]],
+      ],
+    },
     hipX: 0.092,
+    knit: 0.0077215376,
     pelvis: [[[-0.075, 0.92, -0.005, 0.105], [0.075, 0.92, -0.005, 0.105]]],
     glutes: [[[-0.06, 0.905, -0.035, 0.095], [0.06, 0.905, -0.035, 0.095]]],
     waist: [
@@ -168,12 +203,37 @@ export const BODIES = {
       [0.240, -0.006, 0.050],
       [0.150, -0.002, 0.041],
       [0.095, 0.006, 0.038], // ankle
-      [0.062, 0.045, 0.036],
-      [0.036, 0.110, 0.030], // ball of foot
-      [0.027, 0.175, 0.021], // toe
+      [0.0585, 0.0435, 0.0284],
+      [0.0228, 0.1092, 0.0115],
+      [0.0139, 0.1841, 0.0021], // in the second toe, on the line through the big and little toes' tips
     ],
-    heel: [[0.095, 0.006, 0.038], [0.044, -0.026, 0.038]],
+    foot: {
+      heel: [[0.0995, 0.0060, 0.0336], [0.0459, -0.0295, 0.0315]],
+      rows: [
+        [-0.0253, 0.0310, 0.0310, 0.0648, 0.0648, 0.0060, 0.0060],
+        [-0.0190, 0.0353, 0.0353, 0.0690, 0.0690, 0.0060, 0.0060],
+        [-0.0065, 0.0342, 0.0364, 0.0753, 0.0690, 0.0071, 0.0060],
+        [0.0123, 0.0321, 0.0375, 0.0795, 0.0648, 0.0102, 0.0060],
+        [0.0310, 0.0321, 0.0407, 0.0785, 0.0543, 0.0134, 0.0071],
+        [0.0561, 0.0342, 0.0449, 0.0753, 0.0491, 0.0165, 0.0081],
+        [0.0748, 0.0385, 0.0492, 0.0690, 0.0438, 0.0165, 0.0081],
+        [0.0936, 0.0439, 0.0535, 0.0596, 0.0386, 0.0123, 0.0071],
+        [0.1061, 0.0481, 0.0556, 0.0532, 0.0354, 0.0091, 0.0060],
+        [0.1186, 0.0492, 0.0535, 0.0480, 0.0312, 0.0060, 0.0060],
+        [0.1311, 0.0471, 0.0481, 0.0428, 0.0270, 0.0060, 0.0071],
+        [0.1436, 0.0439, 0.0428, 0.0375, 0.0239, 0.0071, 0.0081],
+        [0.1562, 0.0396, 0.0235, 0.0333, 0.0218, 0.0081, 0.0091],
+      ],
+      toes: [
+        [[-0.0268, 0.0218, 0.1291, 0.0142], [-0.0225, 0.0191, 0.1728, 0.0126], [-0.0198, 0.0170, 0.1968, 0.0110]],
+        [[-0.0021, 0.0197, 0.1270, 0.0095], [-0.0011, 0.0165, 0.1635, 0.0082], [0.0000, 0.0131, 0.1921, 0.0065]],
+        [[0.0150, 0.0186, 0.1218, 0.0092], [0.0139, 0.0155, 0.1582, 0.0078], [0.0123, 0.0128, 0.1848, 0.0063]],
+        [[0.0305, 0.0176, 0.1155, 0.0088], [0.0273, 0.0149, 0.1499, 0.0074], [0.0246, 0.0123, 0.1728, 0.0060]],
+        [[0.0449, 0.0165, 0.1082, 0.0084], [0.0401, 0.0139, 0.1384, 0.0069], [0.0369, 0.0118, 0.1603, 0.0057]],
+      ],
+    },
     hipX: 0.088,
+    knit: 0.0079572858,
     pelvis: [[[-0.065, 0.92, -0.005, 0.098], [0.065, 0.92, -0.005, 0.098]]],
     glutes: [[[-0.05, 0.905, -0.03, 0.09], [0.05, 0.905, -0.03, 0.09]]],
     waist: [
@@ -365,6 +425,15 @@ export const BUILD = {
     projection: [0.0056, 0.0807, 0.0065], flat: 0.62, step: 0.0075, grid: { rings: 120, segs: 96, crowd: [0.1, 0.27], probe: [0.066, 0.12] },
     bounce: { hz: [2.6, 2.2], damping: 0.33, gain: 20, drive: 3, knee: [1.7, 0.5], ratio: 25, limit: 0.25, rest: 1e-4, blend: 0.004 },
   },
+  // probes: rays per ring that measure the foot's section for its columns. top: how much denser columns run over
+  // the top than the sides, exp(top) times, and the sole exp(-top). turn: the centre line's horizontal share over
+  // which columns blend from even angles to the foot's.
+  // groove: how far under the tops of two neighbouring toes the stocking's rest shape bridges them, at their roots.
+  // cap: how far behind the toes' front the stocking's last ring stands before its cap closes over them.
+  // wrap: rounds of smoothing that pull the knit across the foot's hollows, the share of the way to the neighbours'
+  // mean each round moves a point, and the rings over which that share ramps in. face: how far every point of the
+  // knit's triangles over the foot stays off the union at rest.
+  foot: { probes: 64, top: 0.7, turn: [0.3, 0.7], groove: 0.0015, cap: 0.004, wrap: { rounds: 10, pull: 0.5, ramp: 4 }, face: 0.001 },
   squeeze: {
     below: 0.07, above: 0.06, // refined window around the band's top edge
     maxPiece: 0.005,
@@ -380,7 +449,9 @@ export const BUILD = {
 // own: half width of the hip share's blend on (distance to the nearer leg - distance to the torso).
 // ramp: frames a held pose takes to arrive. The garments follow the root, so a thigh that jumps straight
 // into a crouch lands 5 to 7 cm inside the skirt, which then thrashes; over 5 to 30 frames the skirt settles.
-export const POSE = { knee: 0.07, ankle: 0.04, elbow: 0.05, own: 0.01, ramp: 15 };
+// toe: width of the toes' blend, starting at the line through their roots and running forward. toeMax: the most a
+// motion bends the toes up, degrees, to keep them on the floor as the heel rises.
+export const POSE = { knee: 0.07, ankle: 0.04, elbow: 0.05, toe: 0.02, toeMax: 60, own: 0.01, ramp: 15 };
 
 // Motions, in degrees and seconds, read by motion.js. A cycle motion keys each joint of the left side over one
 // gait cycle from left heel strike ([phase, degrees], interpolated periodically); the right side runs half a cycle
@@ -388,12 +459,16 @@ export const POSE = { knee: 0.07, ankle: 0.04, elbow: 0.05, own: 0.01, ramp: 15 
 // Through double support one root height must rest two feet, so the trailing ankle is solved: over `push`
 // [from, full from, full to, to] it plantarflexes (a longer reach) or the knee bends (a shorter one), within `reach`
 // [ankle, knee] degrees, until the trailing foot is level with the leading one, changing at most `rate` degrees/s.
+// Feet are measured standing on the ball, as the toes bend up to stay on the floor (POSE.toeMax).
 // A jump drives one crouch value c: crouch holds the angles at c = 1, point those at c = -1 (toes pointed, arms
 // up), and each part eases in across c = +-blend, so standing (c near 0) bends a little of both. While crouching
 // the ankle keeps the foot flat. phases: the cycle as crouch values reached in turn, in `t` seconds each, each
 // starting where the one before ends, on the floor and at rest at both ends except at take-off (the end of the phase
 // before the flight) and landing (the start of the one after). The flight is ballistic to the root height `apex`,
-// its length set by gravity, with the legs reaching c at its middle and returning to take-off's c.
+// its length set by gravity, with the legs reaching c at its middle and returning to take-off's c. The push and the
+// absorb are as short as they are because the pointed foot stands on its ball with the toes flat, which puts the root
+// 12 to 22 mm lower at take-off than the toeless foot did (measured), so they cover less height at the flight's speed
+// and longer ones overshoot.
 export const MOTIONS = {
   stand: { label: 'Stand' },
   walk: {
@@ -411,9 +486,9 @@ export const MOTIONS = {
     phases: [
       { name: 'ready', c: 0.1, t: 0.15 },
       { name: 'dip', c: 1, t: 0.4 },
-      { name: 'push', c: -0.75, t: 0.25 },
+      { name: 'push', c: -0.75, t: 0.23 },
       { name: 'flight', c: -1, flight: true },
-      { name: 'absorb', c: 0.95, t: 0.24 },
+      { name: 'absorb', c: 0.95, t: 0.22 },
       { name: 'rise', c: 0.1, t: 0.45 },
     ],
   },

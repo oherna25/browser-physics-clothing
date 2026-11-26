@@ -1,21 +1,31 @@
 // Sagittal pose field. One deformation, a function of rest position and owner, moves capsule ends, skin,
 // garment homes and pinned cloth vertices, so none of them can disagree. Plain typed-array code: the node
-// test runs it. Pose: { root: { y, z, pitch }, hipL, kneeL, ankleL, hipR, kneeR, ankleR, shoulderL, elbowL,
-// shoulderR, elbowR }; signs in presets.js. The bust's bounce is a term of the same field: an offset in y and z
-// (rig.soft) that each point adds in proportion to its bounce weight.
+// test runs it. Pose: { root: { y, z, pitch }, hipL, kneeL, ankleL, toeL, hipR, kneeR, ankleR, toeR, shoulderL,
+// elbowL, shoulderR, elbowR }; signs in presets.js, a toe's positive when the toes bend up. The bust's bounce is a
+// term of the same field: an offset in y and z (rig.soft) that each point adds in proportion to its bounce weight.
 
 import { STRIDE, nearest } from './cloth.js';
 import { BUILD, POSE } from './presets.js';
 
 // Each limb kind's joints, root end first. blend: half width of the share's blend across the pivot height, or 0
-// for the joint the whole limb turns about rigidly. sign turns a pose angle into the field's rotation.
+// for the joint the whole limb turns about rigidly. The toes' share instead rises over `blend` ahead of the line
+// through their roots (leg.toe), so nothing behind the joint turns with them: a blend centred on it turned the ball
+// down under the foot as the toes bent up. It runs on the point itself, which a toe's cross-section shares: the
+// foot's rows lie across it, so their axis points step forward 6.5 mm at a time, and the knit and the skin under it
+// took different steps and parted by up to 3.6 mm under a bent ball (measured). Past the blend it is the toe's
+// scale across the foot (leg.toe.scale), so the smaller toes bend less. sign turns a pose angle into the field's
+// rotation.
 const LIMB_JOINTS = {
-  leg: [{ name: 'hip', blend: 0, sign: 1 }, { name: 'knee', blend: POSE.knee, sign: -1 }, { name: 'ankle', blend: POSE.ankle, sign: 1 }],
+  leg: [
+    { name: 'hip', blend: 0, sign: 1 }, { name: 'knee', blend: POSE.knee, sign: -1 }, { name: 'ankle', blend: POSE.ankle, sign: 1 },
+    { name: 'toe', blend: POSE.toe, sign: 1 },
+  ],
   arm: [{ name: 'shoulder', blend: 0, sign: 1 }, { name: 'elbow', blend: POSE.elbow, sign: 1 }],
 };
-const SHARES = 3; // one share per joint of the longest chain
+const SHARES = 4; // one share per joint of the longest chain
 const REC = 2 + SHARES, SOFT = 1 + SHARES; // weights per point: owner, the shares, then the bounce weight
 const keyOf = (name, side) => name + (side < 0 ? 'L' : 'R');
+const DEG = Math.PI / 180;
 const ANGLES = ['leg', 'arm'].flatMap((kind) => [-1, 1].flatMap((side) => LIMB_JOINTS[kind].map((j) => keyOf(j.name, side))));
 
 export const STAND = Object.freeze({ root: Object.freeze({ y: 0, z: 0, pitch: 0 }), ...Object.fromEntries(ANGLES.map((k) => [k, 0])) });
@@ -85,12 +95,34 @@ function axisY({ segs: s }, x, y, z) {
   return s[o + 1] + s[o + 5] * t;
 }
 
+// Which points of `pos`, swept from `leg`, lie wholly below the ankle's blend, where the field moves them with the
+// foot and the toes alone.
+export function onFoot(body, leg, pos) {
+  const w = limbWeights({ slot: 0, segs: leg.segs, joints: jointsOf(body, leg) }, pos), out = new Uint8Array(pos.length / 3);
+  for (let i = 0, at = 0; i < out.length; i++, at += REC) out[i] = w[at + 3] === 1 ? 1 : 0;
+  return out;
+}
+
+// Piecewise linear through [x, value] pairs ordered by x, held at the ends.
+function lerpTable(table, x) {
+  if (x <= table[0][0]) return table[0][1];
+  for (let k = 1; k < table.length; k++) {
+    const [x1, v1] = table[k];
+    if (x <= x1) { const [x0, v0] = table[k - 1]; return v0 + (v1 - v0) * (x - x0) / (x1 - x0); }
+  }
+  return table[table.length - 1][1];
+}
+
 // Weights per point, REC floats: owning limb's slot in rig.limbs plus 1 (0 the root), that limb's joint shares,
 // then the bounce weight. A limb's own points turn rigidly about its first joint; the others blend along the chain.
 function limbWeight(limb, x, y, z, h, w, at) {
   w[at] = limb.slot + 1;
   const ay = axisY(limb, x, y, z);
-  limb.joints.forEach((j, k) => { w[at + 1 + k] = j.blend ? h * (1 - smoothstep(j.pivot[0] - j.blend, j.pivot[0] + j.blend, ay)) : h; });
+  limb.joints.forEach((j, k) => {
+    if (!j.ahead) { w[at + 1 + k] = j.blend ? h * (1 - smoothstep(j.pivot[0] - j.blend, j.pivot[0] + j.blend, ay)) : h; return; }
+    const [x0, z0, nx, nz] = j.ahead;
+    w[at + 1 + k] = h * smoothstep(0, j.blend, (x - x0) * nx + (z - z0) * nz) * lerpTable(j.scale, x);
+  });
 }
 
 function limbWeights(limb, pos, w = new Float32Array(pos.length / 3 * REC), at = 0) {
@@ -142,7 +174,9 @@ function deform(rig, pose, w, rest, out) {
         // Most points sit where a share is exactly 0 or 1, so consecutive points usually repeat an angle.
         const q = base + k;
         if (a !== last[q]) { last[q] = a; cos[q] = Math.cos(a); sin[q] = Math.sin(a); }
-        const [py, pz] = limb.joints[k].pivot, c = cos[q], s = sin[q];
+        const P = limb.joints[k].pivot, c = cos[q], s = sin[q];
+        let py = P[0], pz = P[1];
+        if (P.length > 2) { const u = rest[o] - P[4]; py += P[2] * u; pz += P[3] * u; }
         dy = y - py; dz = z - pz; y = py + dy * c + dz * s; z = pz - dy * s + dz * c;
       }
     }
@@ -229,15 +263,18 @@ function poseCapsules(rig, cap) {
   }
 }
 
+// A limb's joints with their pivots; a leg's toes carry their own (leg.toe).
+function jointsOf(body, limb) {
+  return LIMB_JOINTS[limb.kind].map((j) => ({ ...j, key: keyOf(j.name, limb.side), ...(j.name === 'toe' ? limb.toe : { pivot: body.joints[j.name] }) }));
+}
+
 /**
  * A rig poses one body: its live capsule arrays (body.live, which every collider reads), point sets
  * registered with track(), and the cloths passed to applyPose. Rest arrays are never written. soft holds the
  * bust's offset (y, z, metres), which the field adds and anything may set, and the spring stepSoft runs behind it.
  */
 export function makeRig(body) {
-  const limbs = body.limbs.map((limb, slot) => ({
-    slot, segs: limb.segs, joints: LIMB_JOINTS[limb.kind].map((j) => ({ ...j, key: keyOf(j.name, limb.side), pivot: body.joints[j.name] })),
-  }));
+  const limbs = body.limbs.map((limb, slot) => ({ slot, segs: limb.segs, joints: jointsOf(body, limb) }));
   const n = limbs.length * SHARES;
   const rig = {
     body, joints: body.joints, pose: STAND, sets: [], limbs, limbOf: new Map(body.limbs.map((l, k) => [l, limbs[k]])),
@@ -255,25 +292,29 @@ export function makeRig(body) {
 }
 
 // The capsule ends of a leg that can reach the floor, their radii, and last the ankle pivot. The foot is the
-// same in the fine and coarse leg, so the coarse one serves.
+// same in the fine and coarse leg, so the coarse one serves. `toes` lists the ends past the toes' blend.
 const FOOT_TOP = 0.2;
 function footSet(leg, [ay, az]) {
-  const s = leg.segsCoarse, pts = [], radii = [];
+  const s = leg.segsCoarse, pts = [], radii = [], [x0, z0, nx, nz] = leg.toe.ahead;
   for (let o = 0; o < s.length; o += STRIDE) {
     const ra = s[o + 3], rb = ra + s[o + 7];
     if (Math.min(s[o + 1] - ra, s[o + 1] + s[o + 5] - rb) > FOOT_TOP) continue;
     pts.push(s[o], s[o + 1], s[o + 2], s[o] + s[o + 4], s[o + 1] + s[o + 5], s[o + 2] + s[o + 6]);
     radii.push(ra, rb);
   }
+  const toes = [];
+  for (let i = 0; i < radii.length; i++) if ((pts[i * 3] - x0) * nx + (pts[i * 3 + 2] - z0) * nz >= POSE.toe) toes.push(i);
   pts.push(s[0], ay, az);
-  return { set: follow(new Float32Array(pts), leg), radii: new Float32Array(radii) };
+  return { set: follow(new Float32Array(pts), leg), radii: new Float32Array(radii), toes };
 }
 
 /**
  * Where a pose puts the feet: the lowest point of each leg (the bottom of an end sphere, as the floor sees it)
- * and the mean ankle z, written to out = { low: [left, right], z }.
+ * and the mean ankle z, written to out = { low: [left, right], z }. With `free` the toes are bent up as far as a
+ * motion bends them, so the lowest point is what the foot stands on once its toes give way to the floor.
  */
-export function feetOf(rig, pose, out = { low: [0, 0], z: 0 }) {
+export function feetOf(rig, pose, out = { low: [0, 0], z: 0 }, free = false) {
+  if (free) pose = { ...pose, toeL: POSE.toeMax * DEG, toeR: POSE.toeMax * DEG };
   out.z = 0;
   rig.feet.forEach(({ set, radii }, k) => {
     deform(rig, pose, weigh(rig, set), set.rest, set.live);
@@ -284,6 +325,33 @@ export function feetOf(rig, pose, out = { low: [0, 0], z: 0 }) {
     out.z += p[p.length - 1] / 2;
   });
   return out;
+}
+
+// Bends each foot's toes up from straight by the least that keeps them off the floor (y = 0), at most POSE.toeMax:
+// flat on it as the heel rises, straight once the foot leaves it. The root must already be placed. Only the points
+// past the toes' blend count: one in it sinks a few hundredths of a millimetre as they bend, and the root was
+// placed with them bent all the way, so it would hold them there.
+export function bendToes(rig, pose) {
+  const max = POSE.toeMax * DEG;
+  rig.feet.forEach(({ set, radii, toes }, k) => {
+    const key = k ? 'toeR' : 'toeL', w = weigh(rig, set), p = set.live;
+    const low = (a) => {
+      pose[key] = a;
+      deform(rig, pose, w, set.rest, p);
+      let m = Infinity;
+      for (const i of toes) m = Math.min(m, p[i * 3 + 1] - radii[i]);
+      return m;
+    };
+    if (low(0) >= 0) return;
+    // Bisected to double precision, so poses a cycle apart bend their toes alike.
+    let lo = 0, hi = max;
+    for (let it = 0; it < 60; it++) {
+      const mid = (lo + hi) / 2;
+      if (low(mid) >= 0) hi = mid; else lo = mid;
+    }
+    pose[key] = hi;
+  });
+  return pose;
 }
 
 // Registers rest positions and returns the live copy that follows the pose.

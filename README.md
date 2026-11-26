@@ -44,6 +44,7 @@ Open the URL that Vite prints, normally `http://localhost:5173/`.
 | `npm run build` | Builds the static site into `dist/`. |
 | `npm test` | Runs the headless simulation test in Node. It takes about 3 minutes. |
 | `node scripts/bust-render.mjs <outDir> 0,0.5,1` | Renders the torso skin to PNG files without a browser. Add `--wire`, `--jump`, or `--walk`. |
+| `node scripts/foot-render.mjs <outDir>` | Renders both bodies' feet to PNG files, bare and in the settled stocking: six views at rest, the walk's push-off and tiptoe. It prints how many skin pixels show through the stocking and paints them magenta. Add `--wire`. |
 
 ## How it works
 
@@ -69,6 +70,7 @@ A pose is a set of joint angles. One deformation field in `src/pose.js` moves th
 | `src/colourway.js` | Solid, striped, block, and ombre colour patterns. |
 | `test/sim.test.mjs` | The headless test. It asserts measured clearances, shapes, and timings. |
 | `scripts/bust-render.mjs` | A software renderer for checking the skin without a browser. |
+| `scripts/foot-render.mjs` | The same renderer pointed at the feet. |
 
 ## Notes for AI agents
 
@@ -95,7 +97,7 @@ Read this section before you change code.
 |---|---|
 | `apply(option, id)` | Sets an option. Examples: `apply('motion', 'walk')`, `apply('body', 'masculine')`, `apply('shirt', 'tank')`. |
 | `step(frames)` | Advances the simulation by fixed 1/60 s steps and renders. Use it when the tab is throttled. |
-| `pose(partial)` | Holds a static pose. Keys: `hipL`, `hipR`, `kneeL`, `kneeR`, `ankleL`, `ankleR`, `shoulderL`, `shoulderR`, `elbowL`, `elbowR`, and `root: { y, z, pitch }`. |
+| `pose(partial)` | Holds a static pose. Keys: `hipL`, `hipR`, `kneeL`, `kneeR`, `ankleL`, `ankleR`, `toeL`, `toeR`, `shoulderL`, `shoulderR`, `elbowL`, `elbowR`, and `root: { y, z, pitch }`. A positive `toeL` or `toeR` bends the toes up. |
 | `cloths` | The live cloth objects. Each has `pos`, `kind`, and `asleep`. |
 | `motion` | A copy of the motion state: `state`, `id`, `t`, and `amp`. |
 | `settings` | The current option values. |

@@ -168,10 +168,14 @@ function centreline(pts) {
     for (let s = 0; s < length; s += 0.001) if (atS(s).y <= y) return s;
     return length;
   };
-  return { length, atS, sAtY };
+  const sAtZ = (z) => {
+    for (let s = 0; s < length; s += 0.001) if (atS(s).z >= z) return s;
+    return length;
+  };
+  return { length, atS, sAtY, sAtZ };
 }
 
-export function buildLeg(side, { leg: LEG, heel: HEEL, hipX, joints }, mods = { thigh: 0, glute: 0 }, band = null) {
+export function buildLeg(side, { leg: LEG, foot: FOOT, hipX, knit, joints }, mods = { thigh: 0, glute: 0 }, band = null) {
   const pts = subdivide(LEG, 3).map((p) => [0, ...p]); // [x, y, z, r], x filled in once the thigh gain is known
 
   const T = BUILD.thigh;
@@ -181,7 +185,6 @@ export function buildLeg(side, { leg: LEG, heel: HEEL, hipX, joints }, mods = { 
   const x = side * (hipX + dx);
   for (const p of pts) p[0] = x;
 
-  const heel = HEEL.map(([y, z, r]) => [x, y, z, r]);
   const thick = pts.map((p, k) => [x, p[1], p[2], rThick[k], p[3]]);
   let fine = thick, open = [];
   if (band) {
@@ -201,12 +204,82 @@ export function buildLeg(side, { leg: LEG, heel: HEEL, hipX, joints }, mods = { 
     fine = r.pts.map((p) => squeeze(p, band, Q));
     open = r.open;
   }
-  const segs = packSegs([...chainOf(fine, open), heel]);
-  const segsCoarse = packSegs([...chainOf(thick.map((p) => p.slice(0, 4))), heel]);
+  const heel = FOOT.heel.map(([y, z, r]) => [x, y, z, r]), rows = [heel, ...footRows(x, side, FOOT.rows, FOOT_STEP)];
+  const toePts = FOOT.toes.map((t) => t.map(([w, y, z, r]) => [x + side * w, y, z, r])), toes = toePts.map((t) => chainOf(t));
+  const segs = packSegs([...chainOf(fine, open), ...rows, ...toes.flat()]);
+  const segsCoarse = packSegs([...chainOf(thick.map((p) => p.slice(0, 4))), heel, ...footRows(x, side, FOOT.rows, FOOT_STEP * FOOT_COARSE), ...toes.flat()]);
 
   // Same leg without the modifiers: the size the garment is cut for.
-  const ref = mods.thigh > 0 ? buildLeg(side, { leg: LEG, heel: HEEL, hipX }) : null;
-  return { kind: 'leg', side, segs, segsCoarse, ...centreline(pts), dx, ref };
+  const ref = mods.thigh > 0 ? buildLeg(side, { leg: LEG, foot: FOOT, hipX, knit }) : null;
+  const line = centreline(pts), last = FOOT.rows[FOOT.rows.length - 1][0];
+  // Over the toes the rings turn about y until they lie along the line of the toes' tips, so every toe ends in the
+  // last ring and the cap closes them together. Square rings ended one toe after another and cut facets between
+  // their tips. The turn spreads from the little toe's root on, slowly enough that no two rings cross in the foot.
+  const big = toePts[0][toePts[0].length - 1], little = toePts[4][toePts[4].length - 1], root = line.sAtZ(toePts[4][0][2]);
+  const yaw = Math.atan2(big[2] - little[2], Math.abs(little[0] - big[0]));
+  const turn = (s) => {
+    const c = line.atS(s), a = side * yaw * smoothstep(root, line.length, s), ca = Math.cos(a), sa = Math.sin(a);
+    return { ...c, tx: c.tx * ca + c.tz * sa, tz: c.tz * ca - c.tx * sa };
+  };
+  const end = turn(line.length);
+  const atS = (s) => (s <= line.length ? turn(s) : { ...end, x: end.x + end.tx * (s - line.length), y: end.y + end.ty * (s - line.length), z: end.z + end.tz * (s - line.length) });
+  const front = Math.max(...toePts.map((t) => { const [x, y, z, r] = t[t.length - 1]; return (x - end.x) * end.tx + (y - end.y) * end.ty + (z - end.z) * end.tz + r; }));
+  const leg = {
+    kind: 'leg', side, segs, segsCoarse, ...line, atS, dx, ref, knit, front,
+    // The skin draws the foot without its toes up to the last row, and each toe as a limb of its own. The centre
+    // line's capsules past that row are left out, or the cap would run along them into a spike.
+    body: packSegs([...chainOf(fine, open).filter(([a]) => a[2] < last), ...rows]), footEnd: line.sAtZ(last),
+    toes: toePts.map((t, k) => ({ segs: packSegs(toes[k]), r: t[0][3], ...centreline(t) })),
+  };
+  // The toes bend about the line through their roots, each about its own root's axis: pivot y and z for a point at x
+  // are y0 + ly (x - x0) and z0 + lz (x - x0). `ahead` is that line in the ground plane, its normal pointing forward.
+  // The line runs back toward the little toe, so a heel raised about x lifts the smaller toes' pivots above the big
+  // toe's, and bent by one angle their tips stood up to 12 mm off the floor on tiptoe (measured). `scale` holds each
+  // toe's share of the big toe's angle, at the x of each of its points and ordered by x, that lands its tip level
+  // with the big toe's when the foot pitches down by half of POSE.toeMax and the big toe bends up as far.
+  const [bx, by, bz] = toePts[0][0], [lx, ly, lz] = toePts[4][0], ax = lx - bx, az = lz - bz, al = Math.hypot(ax, az), f = Math.sign(ax);
+  const pivot = [by, bz, (ly - by) / ax, (lz - bz) / ax, bx], pitch = POSE.toeMax * Math.PI / 360;
+  const tip = (t, bend) => {
+    const [ex, ey, ez, er] = t[t.length - 1], py = by + pivot[2] * (ex - bx), pz = bz + pivot[3] * (ex - bx);
+    const c = Math.cos(bend), s = Math.sin(bend), y = py + (ey - py) * c + (ez - pz) * s, z = pz - (ey - py) * s + (ez - pz) * c;
+    return y * Math.cos(pitch) - z * Math.sin(pitch) - er;
+  };
+  const level = tip(toePts[0], pitch), scale = toePts.flatMap((t) => {
+    let lo = 0, hi = 1.5;
+    for (let it = 0; it < 50; it++) { const mid = (lo + hi) / 2; if (tip(t, mid * pitch) > level) hi = mid; else lo = mid; }
+    return t.map((p) => [p[0], (lo + hi) / 2]);
+  });
+  leg.toe = { pivot, ahead: [bx, bz, -f * az / al, f * ax / al], scale: scale.sort((a, b) => a[0] - b[0]) };
+  // The toes bridged: the union the stocking's rest shape is cut from, and the section the foot's columns follow.
+  leg.box = concatSegs(segs, packSegs(toeShell(toePts)));
+  leg.columns = footColumns(leg);
+  return leg;
+}
+
+// The tables' rows sit 12 to 24 mm apart, so pieces under 6.5 mm come out 6 mm apart and scallop the foot's sides
+// (end radius 9 mm or more) by under 0.5 mm. The coarse union, which only the floor contact reads, keeps every third.
+const FOOT_STEP = 0.0065, FOOT_COARSE = 3;
+
+// The stocking's rest shape adds a chain between each pair of neighbouring toes, its top BUILD.foot.groove under
+// theirs at the roots and level with them at the tips, and a chain along the tips: the knit lies over shallow grooves
+// behind one rounded front, like a mitten, and the section stays in sight of the centre line, whose rays would
+// otherwise skip from toe to toe and cut flat facets between their tips.
+function toeShell(toePts) {
+  const { groove } = BUILD.foot, n = toePts[0].length;
+  const bridges = toePts.slice(1).flatMap((b, k) => chainOf(toePts[k].map((p, i) => {
+    const q = b[i], y = (p[1] + q[1]) / 2, g = groove * (1 - i / (n - 1));
+    return [(p[0] + q[0]) / 2, y, (p[2] + q[2]) / 2, (p[1] + p[3] + q[1] + q[3]) / 2 - g - y];
+  })));
+  return [...bridges, ...chainOf(toePts.map((t) => t[n - 1]))];
+}
+
+// The foot's body: one capsule across it per interpolated row. Rows are [z, inner edge, outer edge, inner top, outer
+// top, inner sole, outer sole], the edges measured from the leg's line, so each end's radius is half its height.
+function footRows(x, side, rows, step) {
+  return resample(rows, [0], step).map(([z, ei, eo, ti, to, si, so]) => {
+    const ri = (ti - si) / 2, ro = (to - so) / 2;
+    return [[x - side * (ei - ri), si + ri, z, ri], [x + side * (eo - ro), so + ro, z, ro]];
+  });
 }
 
 const HAND_STEP = 0.004; // row spacing that keeps the ripple between 1 cm thick rows under 0.2 mm
@@ -287,6 +360,55 @@ function march(segs, ox, oy, oz, ux, uy, uz, offset, out, o) {
   out[o] = px + hit.nx * offset; out[o + 1] = py + hit.ny * offset; out[o + 2] = pz + hit.nz * offset;
 }
 
+// Ring frame at a centre-line sample: N1 is +x with its part along the tangent removed, N2 = T x N1.
+function ringFrame(c) {
+  const k = c.tx;
+  let ax = 1 - k * c.tx, ay = -k * c.ty, az = -k * c.tz;
+  const l = Math.hypot(ax, ay, az);
+  ax /= l; ay /= l; az /= l;
+  return [ax, ay, az, c.ty * az - c.tz * ay, c.tz * ax - c.tx * az, c.tx * ay - c.ty * ax];
+}
+
+// Column angles of a leg's ring at arc length s, or null for even angles. Across the foot the section is wide and
+// flat, where even angles bunch on the instep and leave the edges and toes a centimetre apart. There columns are even
+// in arc length along the section, weighted toward the top, counted from the top point so the two legs stay mirror
+// images, and they blend in from even angles as the centre line turns forward. Probed once per ring and cached, so
+// the skin and the stocking share them.
+function footColumns(leg) {
+  const { probes: K, top, turn } = BUILD.foot, cache = new Map(), q = new Float32Array(K * 3);
+  return (s, nseg) => {
+    const key = `${s} ${nseg}`;
+    if (cache.has(key)) return cache.get(key);
+    const c = leg.atS(s), w = smoothstep(turn[0], turn[1], Math.hypot(c.tx, c.tz));
+    let out = null;
+    if (w > 0) {
+      const [ax, ay, az, bx, by, bz] = ringFrame(c), th = (k) => (k / K) * Math.PI * 2;
+      for (let k = 0; k < K; k++) {
+        const ct = Math.cos(th(k)), st = Math.sin(th(k));
+        march(leg.box, c.x, c.y, c.z, ax * ct + bx * st, ay * ct + by * st, az * ct + bz * st, 0, q, k * 3);
+      }
+      // Weighted length from the top point (k = K / 4) round to each probe.
+      const acc = new Float64Array(K + 1);
+      for (let i = 0; i < K; i++) {
+        const a = (K / 4 + i) % K, b = (a + 1) % K;
+        const len = Math.hypot(q[b * 3] - q[a * 3], q[b * 3 + 1] - q[a * 3 + 1], q[b * 3 + 2] - q[a * 3 + 2]);
+        acc[i + 1] = acc[i] + len * Math.exp(top * Math.sin(th(a + 0.5)));
+      }
+      out = new Float64Array(nseg);
+      for (let j = 0; j < nseg; j++) {
+        const u = ((((j - nseg / 4) % nseg) + nseg) % nseg) / nseg * acc[K];
+        let i = 0;
+        while (i < K - 1 && acc[i + 1] < u) i++;
+        const t = th(K / 4 + i + (u - acc[i]) / Math.max(acc[i + 1] - acc[i], 1e-12)), even = (j / nseg) * Math.PI * 2;
+        const d = ((t - even) % (2 * Math.PI) + 3 * Math.PI) % (2 * Math.PI) - Math.PI;
+        out[j] = even + w * d;
+      }
+    }
+    cache.set(key, out);
+    return out;
+  };
+}
+
 /**
  * Tube of `rings` x `nseg` vertices wrapped around a limb from arc length s0 to s1, closed over the end by
  * `capRings` shrinking rings and a pole vertex, and over the start by `startRings` rings and a second pole
@@ -304,14 +426,9 @@ export function sweepLimb(limb, s0, s1, rings, nseg, offset, capRings, startRing
     const c = limb.atS(b < 0 ? s0 : cap > 0 ? s1 : at ? at[b] : s0 + (s1 - s0) * b / (rings - 1));
     const phi = b < 0 ? (-Math.PI / 2) * -b / (startRings + 1) : cap > 0 ? (Math.PI / 2) * cap / (capRings + 1) : 0;
     const cp = Math.cos(phi), sp = Math.sin(phi);
-    // Ring frame: N1 is +x with its part along T removed, N2 = T x N1.
-    const k = c.tx;
-    let ax = 1 - k * c.tx, ay = -k * c.ty, az = -k * c.tz;
-    const l = Math.hypot(ax, ay, az);
-    ax /= l; ay /= l; az /= l;
-    const bx = c.ty * az - c.tz * ay, by = c.tz * ax - c.tx * az, bz = c.tx * ay - c.ty * ax;
+    const [ax, ay, az, bx, by, bz] = ringFrame(c), cols = limb.columns?.(b < 0 ? s0 : cap > 0 ? s1 : at ? at[b] : s0 + (s1 - s0) * b / (rings - 1), nseg);
     for (let j = 0; j < nseg; j++, o += 3) {
-      const th = (j / nseg) * Math.PI * 2, ct = Math.cos(th), st = Math.sin(th);
+      const th = cols ? cols[j] : (j / nseg) * Math.PI * 2, ct = Math.cos(th), st = Math.sin(th);
       const ux = ax * ct + bx * st, uy = ay * ct + by * st, uz = az * ct + bz * st;
       march(limb.segs, c.x, c.y, c.z, ux * cp + c.tx * sp, uy * cp + c.ty * sp, uz * cp + c.tz * sp, offset, pos, o);
     }
@@ -325,11 +442,12 @@ export function sweepLimb(limb, s0, s1, rings, nseg, offset, capRings, startRing
   return { pos, rings: total, segs: nseg, startPole: startRings > 0 };
 }
 
-// Mean distance from the leg centreline of each ring of a sweepLimb tube.
+// Mean distance from the leg centreline of each ring of a sweepLimb tube; `rings` as sweepLimb takes it.
 export function ringRadii(leg, g, s0, s1, rings) {
-  const out = new Float32Array(g.rings);
+  const out = new Float32Array(g.rings), at = Array.isArray(rings) ? rings : null;
+  if (at) rings = at.length;
   for (let i = 0; i < g.rings; i++) {
-    const c = leg.atS(i >= rings ? s1 : s0 + (s1 - s0) * i / (rings - 1));
+    const c = leg.atS(i >= rings ? s1 : at ? at[i] : s0 + (s1 - s0) * i / (rings - 1));
     let m = 0;
     for (let j = 0; j < g.segs; j++) {
       const o = (i * g.segs + j) * 3;

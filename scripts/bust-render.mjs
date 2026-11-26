@@ -13,12 +13,13 @@ import { STOCKING_BAND } from '../src/garments.js';
 import { makeRig, track, applyPose, stepSoft, BLEND } from '../src/pose.js';
 import { buildMotions, makeDriver, want, drive } from '../src/motion.js';
 
-const W = 520, H = 520, HALF = 0.2, CENTRE = [0, 1.235, 0.04];
+export const W = 520, H = 520;
+const HALF = 0.2, CENTRE = [0, 1.235, 0.04];
 const VIEWS = { front: 0, threequarter: 45, side: 90 };
 
 const crcTable = Array.from({ length: 256 }, (_, n) => { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; return c >>> 0; });
 const crc = (buf) => { let c = 0xffffffff; for (const b of buf) c = crcTable[(c ^ b) & 0xff] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
-function png(rgb, w, h) {
+export function png(rgb, w, h) {
   const raw = Buffer.alloc((w * 3 + 1) * h);
   for (let y = 0; y < h; y++) { raw[y * (w * 3 + 1)] = 0; rgb.copy(raw, y * (w * 3 + 1) + 1, y * w * 3, (y + 1) * w * 3); }
   const chunk = (type, data) => {
@@ -35,26 +36,36 @@ const LIGHTS = [[norm([1.2, 2.4, 1.6]), 0.72], [norm([-2.2, 0.5, 1.4]), 0.22]];
 const AMBIENT = 0.14, SKIN = [214, 162, 128];
 
 const grids = (body) => [buildTorso(body), ...body.arms.map((arm) => sweepLimb(arm, 0, arm.length, 150, 40, 0, 6, 6))];
-const shaded = ({ pos, rings, segs, startPole = false }) => {
+export const shaded = ({ pos, rings, segs, startPole = false }) => {
   const index = gridIndex(rings, segs, true, true, startPole), normal = new Float32Array(pos.length);
   computeNormals(pos, index, normal);
   return { pos, index, normal };
 };
 const meshes = (size) => grids(buildBody(BODIES.feminine, { thigh: 0, glute: 0, chest: size }, STOCKING_BAND)).map(shaded);
 
-function render(list, deg, wire, centre = CENTRE, guide = null) {
-  const a = deg * Math.PI / 180, f = [Math.sin(a), 0, Math.cos(a)], r = [Math.cos(a), 0, -Math.sin(a)], u = [0, 1, 0];
+// A view from `deg` about y, 0 from the front (+z): right, up and toward-the-camera axes, and what it frames.
+export const yaw = (deg, centre = CENTRE, half = HALF) => {
+  const a = deg * Math.PI / 180;
+  return { r: [Math.cos(a), 0, -Math.sin(a)], u: [0, 1, 0], f: [Math.sin(a), 0, Math.cos(a)], centre, half };
+};
+
+// A mesh may carry its own colour, and `cull` drops its triangles that face away, as a single-sided material does.
+// `lights` are [direction, strength] pairs. `won`, when given, receives per pixel the
+// index in `list` of the mesh drawn there (-1 for none) and the world height of what was drawn.
+export function render(list, { r, u, f, centre, half }, { wire = false, guide = null, lights = LIGHTS, won = null } = {}) {
   const depth = new Float32Array(W * H).fill(-Infinity), rgb = Buffer.alloc(W * H * 3, 236);
-  const px = (p) => (((p[0] - centre[0]) * r[0] + (p[2] - centre[2]) * r[2]) / HALF + 1) * W / 2;
-  const py = (p) => (1 - ((p[1] - centre[1]) / HALF)) * H / 2;
-  const pz = (p) => p[0] * f[0] + p[2] * f[2];
-  for (const { pos, index, normal } of list) {
+  const dot = (p, a) => (p[0] - centre[0]) * a[0] + (p[1] - centre[1]) * a[1] + (p[2] - centre[2]) * a[2];
+  const px = (p) => (dot(p, r) / half + 1) * W / 2;
+  const py = (p) => (1 - dot(p, u) / half) * H / 2;
+  const pz = (p) => dot(p, f);
+  if (won) won.mesh.fill(-1);
+  for (const [m, { pos, index, normal, color = SKIN, cull = false }] of list.entries()) {
     const P = (i) => [pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]], N = (i) => [normal[i * 3], normal[i * 3 + 1], normal[i * 3 + 2]];
     for (let t = 0; t < index.length; t += 3) {
       const ids = [index[t], index[t + 1], index[t + 2]], v = ids.map(P), n = ids.map(N);
       const sx = v.map(px), sy = v.map(py), sz = v.map(pz);
       const area = (sx[1] - sx[0]) * (sy[2] - sy[0]) - (sx[2] - sx[0]) * (sy[1] - sy[0]);
-      if (Math.abs(area) < 1e-12) continue;
+      if (Math.abs(area) < 1e-12 || (cull && area > 0)) continue;
       const x0 = Math.max(0, Math.floor(Math.min(...sx))), x1 = Math.min(W - 1, Math.ceil(Math.max(...sx)));
       const y0 = Math.max(0, Math.floor(Math.min(...sy))), y1 = Math.min(H - 1, Math.ceil(Math.max(...sy)));
       for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
@@ -66,11 +77,12 @@ function render(list, deg, wire, centre = CENTRE, guide = null) {
         const z = w0 * sz[0] + w1 * sz[1] + w2 * sz[2], k = y * W + x;
         if (z <= depth[k]) continue;
         depth[k] = z;
+        if (won) { won.mesh[k] = m; won.y[k] = w0 * v[0][1] + w1 * v[1][1] + w2 * v[2][1]; }
         const nn = norm([0, 1, 2].map((c) => w0 * n[0][c] + w1 * n[1][c] + w2 * n[2][c]));
         let light = AMBIENT;
-        for (const [d, s] of LIGHTS) light += s * Math.max(0, nn[0] * d[0] + nn[1] * d[1] + nn[2] * d[2]);
+        for (const [d, s] of lights) light += s * Math.max(0, nn[0] * d[0] + nn[1] * d[1] + nn[2] * d[2]);
         const edge = wire && Math.min(w0, w1, w2) < 0.04;
-        for (let c = 0; c < 3; c++) rgb[k * 3 + c] = edge ? 60 : Math.min(255, SKIN[c] * light * 1.05);
+        for (let c = 0; c < 3; c++) rgb[k * 3 + c] = edge ? 60 : Math.min(255, color[c] * light * 1.05);
       }
     }
   }
@@ -87,7 +99,7 @@ export function renderChest(outDir, sizes, wire = false) {
     const list = meshes(size);
     for (const [name, deg] of Object.entries(VIEWS)) {
       const file = `${outDir}/chest${Math.round(size * 100)}-${name}${wire ? '-wire' : ''}.png`;
-      writeFileSync(file, png(render(list, deg, wire), W, H));
+      writeFileSync(file, png(render(list, yaw(deg), { wire }), W, H));
       console.log(file);
     }
   }
@@ -122,7 +134,7 @@ function filmstrip(outDir, sizes, wire, name, plan) {
       if (!label) continue;
       for (const m of list) computeNormals(m.pos, m.index, m.normal);
       const g = crest(p), centre = [0, g[1] + offset[0], g[2] + offset[1]];
-      frames.push(render(list, VIEWS.side, wire, centre, g));
+      frames.push(render(list, yaw(VIEWS.side, centre), { wire, guide: g }));
       console.log(`chest ${size} frame ${f} (${label}): bust offset y ${(rig.soft.y * 1000).toFixed(1)} mm, z ${(rig.soft.z * 1000).toFixed(1)} mm`);
     }
     const strip = Buffer.alloc(W * frames.length * H * 3);

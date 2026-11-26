@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { buildBody, buildTorso, buildHead, buildChokerRest, neckPoint, sweepLimb } from './body.js';
-import { makeStocking, makeSkirt, makeShirt, legSkin, STOCKING_BAND } from './garments.js';
+import { makeStocking, makeSkirt, makeShirt, legSkin, toeSkins, STOCKING_BAND } from './garments.js';
 import { stepCloth, beginGrab, endGrab, resetCloth, computeStretch, computeNormals, gridIndex, STRIDE } from './cloth.js';
 import { buildMotions, makeDriver, want, restart, drive, followView } from './motion.js';
 import { makeRig, track, follow, poseSet, angleOf, applyPose, stepSoft, makePose, blendPose, STAND, ROOT, BLEND } from './pose.js';
@@ -456,7 +456,7 @@ function buildFigure(shape, mods) {
   const rig = makeRig(body);
   const group = new THREE.Group();
   const skin = [
-    ...body.legs.map((leg) => skinMesh(rig, legSkin(leg), leg)),
+    ...body.legs.flatMap((leg) => [legSkin(leg), ...toeSkins(leg)].map((g) => skinMesh(rig, g, leg))),
     skinMesh(rig, buildTorso(body), BLEND),
     ...body.arms.map((arm) => skinMesh(rig, sweepLimb(arm, 0, arm.length, 150, 40, 0, 6, 6), arm)),
     skinMesh(rig, buildHead(body), ROOT),

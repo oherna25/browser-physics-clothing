@@ -1,9 +1,9 @@
 // Garment construction shared by the browser app and the headless test.
 
-import { makeGridCloth, setCollider, concatSegs, STRIDE } from './cloth.js';
+import { makeGridCloth, setCollider, concatSegs, nearest, gridIndex, STRIDE } from './cloth.js';
 import { sweepLimb, buildSkirt, buildShirtRest, ringRadii, SKIRT_WAIST_Y } from './body.js';
-import { SHIRT, STOCKING_MOTION, SKIRT_MOTION } from './presets.js';
-import { bounceSlack } from './pose.js';
+import { SHIRT, STOCKING_MOTION, SKIRT_MOTION, BUILD } from './presets.js';
+import { bounceSlack, onFoot } from './pose.js';
 
 export const SKIRT_THICKNESS = 0.005;
 export const STOCKING_TOP_Y = 0.63;
@@ -23,20 +23,114 @@ function pickCollider(cloth, body, keep, slack = null) {
 // The stocking's grid, which the leg skin shares on the foot: there a ring sweep fans out over the heel and steps
 // across the arch, so two grids of different pitch cut different chords and the coarser stocking's dipped up to
 // 4.6 mm under the skin at rest (measured). Above the foot the skin is about twice as fine.
-const STOCKING_RINGS = 92, LEG_SEGS = 44, CAP_RINGS = 5, SKIN_PITCH = 0.004, FOOT_Y = 0.15;
+const LEG_SEGS = 44, CAP_RINGS = 5, SKIN_PITCH = 0.004, FOOT_Y = 0.15, TOE_PITCH = 0.0035;
 
+// Arc lengths of the stocking's rings: from its top at the leg's knit pitch down to the first ring below FOOT_Y, then
+// spread evenly to the toes about as far apart. The second value is that first ring's index.
+function stockingRings(leg) {
+  const s0 = leg.sAtY(STOCKING_TOP_Y), foot = leg.sAtY(FOOT_Y), at = [];
+  while (s0 + leg.knit * at.length < foot) at.push(s0 + leg.knit * at.length);
+  const k = at.length, sk = s0 + leg.knit * k, end = leg.length + leg.front - BUILD.foot.cap, n = Math.ceil((end - sk) / leg.knit);
+  for (let j = 0; j <= n; j++) at.push(sk + (end - sk) * j / n);
+  return [at, k];
+}
+
+// The leg down to the front of the foot's body, where its cap stays inside the toes.
 export function legSkin(leg) {
-  const s0 = leg.sAtY(STOCKING_TOP_Y), L = leg.length, foot = leg.sAtY(FOOT_Y);
-  const k = Math.ceil((foot - s0) / (L - s0) * (STOCKING_RINGS - 1)), s = s0 + (L - s0) * k / (STOCKING_RINGS - 1);
-  const n = Math.ceil(s / SKIN_PITCH), rings = [];
+  const [at, k] = stockingRings(leg), s = at[k], n = Math.ceil(s / SKIN_PITCH), rings = [];
   for (let i = 0; i < n; i++) rings.push(s * i / n);
-  for (let i = k; i < STOCKING_RINGS; i++) rings.push(s0 + (L - s0) * i / (STOCKING_RINGS - 1));
-  return sweepLimb(leg, 0, L, rings, LEG_SEGS, 0, CAP_RINGS);
+  for (let i = k; i < at.length && at[i] <= leg.footEnd; i++) rings.push(at[i]);
+  return sweepLimb({ ...leg, segs: leg.body }, 0, rings[rings.length - 1], rings, LEG_SEGS, 0, CAP_RINGS);
+}
+
+// One tube per toe, closed at both ends, about TOE_PITCH between rings and columns.
+export function toeSkins(leg) {
+  return leg.toes.map((toe) => {
+    const nseg = 2 * Math.ceil(Math.PI * toe.r / TOE_PITCH);
+    return sweepLimb(toe, 0, toe.length, Math.ceil(toe.length / TOE_PITCH) + 1, nseg, 0, 4, 4);
+  });
+}
+
+// On the foot some rays graze a toe or leave the union steeply, so they end nearer it than the sweep's offset and the
+// knit's thickness would push them off home at rest. Those points step out along the nearest capsule's normal.
+function clearFoot(pos, segs, offset, from = 0) {
+  const hit = {};
+  for (let o = from * 3; o < pos.length; o += 3) {
+    for (let k = 0; k < 2 && pos[o + 1] < FOOT_Y; k++) {
+      if (nearest(segs, pos[o], pos[o + 1], pos[o + 2], hit).d >= offset) break;
+      const s = offset - hit.d;
+      pos[o] += hit.nx * s; pos[o + 1] += hit.ny * s; pos[o + 2] += hit.nz * s;
+    }
+  }
+  return pos;
+}
+
+// Knit pulled over the foot spans the hollows between the toes and rows instead of following them into creases: a few
+// rounds of smoothing the foot's rings toward their neighbours, each followed by stepping out what that pulled under
+// the offset. The smoothing ramps in over the first rings so the leg above keeps its shape.
+function wrapFoot(g, k, segs, offset) {
+  const { pos, rings, segs: n } = g, pole = rings * n, was = new Float32Array(pos.length), { rounds, pull, ramp } = BUILD.foot.wrap;
+  for (let it = 0; it < rounds; it++) {
+    was.set(pos);
+    for (let i = k + 1; i < rings; i++) {
+      const w = pull * Math.min(1, (i - k) / ramp), up = (i - 1) * n, down = i + 1 < rings ? (i + 1) * n : -1;
+      for (let j = 0; j < n; j++) {
+        const o = (i * n + j) * 3, a = (i * n + (j + 1) % n) * 3, b = (i * n + (j + n - 1) % n) * 3, c = (up + j) * 3, e = (down < 0 ? pole : down + j) * 3;
+        for (let d = 0; d < 3; d++) pos[o + d] += w * ((was[a + d] + was[b + d] + was[c + d] + was[e + d]) / 4 - was[o + d]);
+      }
+    }
+    for (let d = 0, o = pole * 3; d < 3; d++) {
+      let m = 0;
+      for (let j = 0; j < n; j++) m += was[((rings - 1) * n + j) * 3 + d];
+      pos[o + d] += pull * (m / n - was[o + d]);
+    }
+    clearFoot(pos, segs, offset, k * n);
+  }
+}
+
+// A triangle between points that clear the union can still cut into it where the union bends sharply under it, as
+// over a toe's tip. Points on a barycentric grid of every foot triangle that come nearer the union than `margin`
+// move it out along the capsule's normal, shared among its corners by their weights at that point.
+const FACE_GRID = [];
+for (let i = 0; i <= 4; i++) for (let j = 0; i + j <= 4; j++) FACE_GRID.push([i / 4, j / 4, (4 - i - j) / 4]);
+function clearFaces(g, k, segs, margin) {
+  const { pos } = g, ix = gridIndex(g.rings, g.segs, true), hit = {}, from = k * g.segs;
+  for (let it = 0; it < 4; it++) {
+    let moved = 0;
+    for (let t = 0; t < ix.length; t += 3) {
+      const a = ix[t] * 3, b = ix[t + 1] * 3, c = ix[t + 2] * 3;
+      if (ix[t] < from || ix[t + 1] < from || ix[t + 2] < from) continue;
+      for (const [u, v, w] of FACE_GRID) {
+        const x = u * pos[a] + v * pos[b] + w * pos[c], y = u * pos[a + 1] + v * pos[b + 1] + w * pos[c + 1], z = u * pos[a + 2] + v * pos[b + 2] + w * pos[c + 2];
+        if (nearest(segs, x, y, z, hit).d >= margin - 1e-5) continue; // within float32 rounding of the margin
+        const s = (margin - hit.d) / (u * u + v * v + w * w);
+        for (const [o, q] of [[a, u], [b, v], [c, w]]) { pos[o] += hit.nx * s * q; pos[o + 1] += hit.ny * s * q; pos[o + 2] += hit.nz * s * q; }
+        moved++;
+      }
+    }
+    if (!moved) break;
+  }
+}
+
+// The leg's capsules that reach below `y`: all the foot's rings can come near.
+function capsulesBelow(segs, y) {
+  const keep = [];
+  for (let o = 0; o < segs.length; o += STRIDE) if (Math.min(segs[o + 1] - segs[o + 3], segs[o + 1] + segs[o + 5] - segs[o + 3] - segs[o + 7]) < y) keep.push(segs.subarray(o, o + STRIDE));
+  return concatSegs(...keep);
+}
+
+// The stocking's rest shape from leg's union `box`, its first foot ring k.
+function stockingShape(leg, segs, rings, k, offset) {
+  const g = sweepLimb({ ...leg, segs: leg.box }, rings[0], rings[rings.length - 1], rings, segs, offset, CAP_RINGS), near = capsulesBelow(leg.segs, FOOT_Y + 0.03);
+  clearFoot(g.pos, near, offset);
+  wrapFoot(g, k, near, offset);
+  clearFaces(g, k, near, BUILD.foot.face);
+  return g;
 }
 
 export function makeStocking(body, leg) {
-  const s0 = leg.sAtY(STOCKING_TOP_Y), rings = STOCKING_RINGS, segs = LEG_SEGS, capRings = CAP_RINGS;
-  const g = sweepLimb(leg, s0, leg.length, rings, segs, 0.0015, capRings);
+  const [rings, k] = stockingRings(leg), s0 = rings[0], s1 = rings[rings.length - 1], segs = LEG_SEGS, offset = 0.0015;
+  const g = stockingShape(leg, segs, rings, k, offset);
   const cloth = makeGridCloth({
     pos: g.pos, rings: g.rings, segs: g.segs, pole: true, pinRings: [0], pinPole: true,
     home: g.pos.slice(),
@@ -49,18 +143,23 @@ export function makeStocking(body, leg) {
       ...STOCKING_MOTION,
     },
   });
+  // Below the ankle's blend the knit is pinned home, which the field moves with the skin under it: a foot's knit is
+  // held by its fit. Left free, its triangles slid up to 4 mm through a stride and cut across the heel and the toes'
+  // tips, and the sole under a bent ball pulled taut through the skin by 1.2 mm (measured).
+  const rigid = onFoot(body, leg, g.pos);
+  for (let i = k * segs; i < cloth.n; i++) if (rigid[i]) cloth.w[i] = 0;
   setCollider(cloth, body.live.base.segs);
   cloth.colliderFull = body.live.segs;
   cloth.kind = 'stocking';
   cloth.leg = leg; // the pose turns its home with this leg alone
-  cloth.bodyRings = rings; // rings before the toe cap
+  cloth.bodyRings = rings.length; // rings before the toe cap
 
   // The knit is cut for the unmodified leg, so a thicker one starts out pre-stretched.
   // Rest lengths stay at home length; this only feeds the sheer shader.
   cloth.preStretch = new Float32Array(cloth.n).fill(1);
   if (leg.ref) {
-    const gr = sweepLimb(leg.ref, s0, leg.length, rings, segs, 0.0015, capRings);
-    const a = ringRadii(leg, g, s0, leg.length, rings), b = ringRadii(leg.ref, gr, s0, leg.length, rings);
+    const gr = stockingShape(leg.ref, segs, rings, k, offset);
+    const a = ringRadii(leg, g, s0, s1, rings), b = ringRadii(leg.ref, gr, s0, s1, rings);
     for (let i = 0; i < g.rings; i++) cloth.preStretch.fill(Math.max(a[i] / b[i], 1), i * segs, (i + 1) * segs);
   }
   return cloth;
