@@ -155,7 +155,7 @@ export function makeGridCloth({ pos, rings, segs, pole = false, bend = false, pi
     stretch: new Float32Array(n).fill(1),
     stretchCount: new Float32Array(n),
     collider: null, cand: null, candStart: null, candR2: 0, fallbacks: 0,
-    grab: null, kin: null, frame: 0, h: 0,
+    grab: null, kin: null, air: null, frame: 0, h: 0,
     params: {
       compliance: [0, 0, 0], // per constraint type, m/N (unit masses)
       homeK: 0,              // tether spring, 1/s^2
@@ -248,7 +248,7 @@ export function resetCloth(c) {
   c.asleep = false; c.stillFrames = 0;
 }
 
-function substep(c, h, air) {
+function integrate(c, h, air) {
   const { pos, prev, w, home, n } = c;
   const P = c.params;
   const damp = Math.exp(-P.damping * h);
@@ -282,9 +282,11 @@ function substep(c, h, air) {
       pos[o + 2] += (g.start[q * 3 + 2] + g.dz * wt - pos[o + 2]) * wt;
     }
   }
+}
 
-  // 3. Distance constraints (XPBD-style compliance, one Gauss-Seidel pass).
-  const { ci, cj, ct, rest } = c;
+// 3. Distance constraints (XPBD-style compliance, one Gauss-Seidel pass).
+function solve(c, h) {
+  const { pos, w, home, ci, cj, ct, rest } = c, P = c.params, h2 = h * h;
   const a0 = P.compliance[0] / h2, a1 = P.compliance[1] / h2, a2 = P.compliance[2] / h2;
   // A tethered knit holds its shape through the tether, so its threads only resist stretch.
   // Resisting compression too leaves no rest state where a pose folds the fabric (behind a knee).
@@ -301,7 +303,53 @@ function substep(c, h, air) {
     pos[a] += dx * s * wi; pos[a + 1] += dy * s * wi; pos[a + 2] += dz * s * wi;
     pos[b] -= dx * s * wj; pos[b + 1] -= dy * s * wj; pos[b + 2] -= dz * s * wj;
   }
+}
 
+// The same pass for two cloths. A cloth's constraints are one long chain of updates, each reading what the last wrote,
+// so the processor cannot overlap them. Two cloths never touch, so interleaving their passes in one loop lets it work
+// on both chains at once, each in its own order (measured: two stockings 0.26 to 0.15 ms a pass). A lone cloth runs
+// faster in solve, which this loop slows by a third.
+function solvePair(c, h, d, hd) {
+  const { pos, w, home, ci, cj, ct, rest } = c, P = c.params, h2 = h * h;
+  const a0 = P.compliance[0] / h2, a1 = P.compliance[1] / h2, a2 = P.compliance[2] / h2;
+  const { pos: posD, w: wD, home: homeD, ci: ciD, cj: cjD, ct: ctD, rest: restD } = d, PD = d.params, h2D = hd * hd;
+  const d0 = PD.compliance[0] / h2D, d1 = PD.compliance[1] / h2D, d2 = PD.compliance[2] / h2D;
+  const slack = home !== null, slackD = homeD !== null, n = ci.length, nD = ciD.length;
+  for (let q = 0, m = Math.max(n, nD); q < m; q++) {
+    if (q < n) {
+      const i = ci[q], j = cj[q], wi = w[i], wj = w[j], ws = wi + wj;
+      if (ws !== 0) {
+        const a = i * 3, b = j * 3;
+        const dx = pos[b] - pos[a], dy = pos[b + 1] - pos[a + 1], dz = pos[b + 2] - pos[a + 2];
+        const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        if (!(len < 1e-9 || (slack && len < rest[q]))) {
+          const t = ct[q];
+          const s = (len - rest[q]) / ((ws + (t === 0 ? a0 : t === 1 ? a1 : a2)) * len);
+          pos[a] += dx * s * wi; pos[a + 1] += dy * s * wi; pos[a + 2] += dz * s * wi;
+          pos[b] -= dx * s * wj; pos[b + 1] -= dy * s * wj; pos[b + 2] -= dz * s * wj;
+        }
+      }
+    }
+    if (q < nD) {
+      const i = ciD[q], j = cjD[q], wi = wD[i], wj = wD[j], ws = wi + wj;
+      if (ws !== 0) {
+        const a = i * 3, b = j * 3;
+        const dx = posD[b] - posD[a], dy = posD[b + 1] - posD[a + 1], dz = posD[b + 2] - posD[a + 2];
+        const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        if (!(len < 1e-9 || (slackD && len < restD[q]))) {
+          const t = ctD[q];
+          const s = (len - restD[q]) / ((ws + (t === 0 ? d0 : t === 1 ? d1 : d2)) * len);
+          posD[a] += dx * s * wi; posD[a + 1] += dy * s * wi; posD[a + 2] += dz * s * wi;
+          posD[b] -= dx * s * wj; posD[b + 1] -= dy * s * wj; posD[b + 2] -= dz * s * wj;
+        }
+      }
+    }
+  }
+}
+
+function collide(c) {
+  const { pos, prev, w, n } = c;
+  const P = c.params;
   // 4. Capsule collision: push out along the capsule normal.
   const segs = c.wideFrames > 0 && c.colliderFull ? c.colliderFull : c.collider;
   if (!segs) return;
@@ -346,17 +394,21 @@ function substep(c, h, air) {
   }
 }
 
+function substep(c, h, air) {
+  integrate(c, h, air);
+  solve(c, h);
+  collide(c);
+}
+
 const SLEEP_SPEED = 0.002; // m/s
 const SLEEP_FRAMES = 20;
 // A held cloth keeps the substeps its pull was tuned with, and so does a cloth without a tether: at 4 a dropped
 // masculine skirt hem stays caught inside the body (clearance -54 mm). A tethered cloth is stable with 4.
 export const SUBSTEPS = 4, FULL_SUBSTEPS = 6;
+const substepsOf = (c) => c.grab || !c.home ? FULL_SUBSTEPS : SUBSTEPS;
 
-/**
- * Advance one frame. Returns false when nothing moved: a cloth that has been
- * still for a while goes to sleep and costs nothing until it is grabbed.
- */
-export function stepCloth(c, dt, substeps = c.grab || !c.home ? FULL_SUBSTEPS : SUBSTEPS) {
+// Everything a step does before its substeps. False when the cloth does not step.
+function begin(c, dt, substeps) {
   if (!(dt > 1e-5)) return false; // a zero step would divide compliance by zero
   const frame = c.frame++;
   if (c.asleep && !c.grab) return false;
@@ -382,15 +434,18 @@ export function stepCloth(c, dt, substeps = c.grab || !c.home ? FULL_SUBSTEPS : 
     }
   }
   if (K) K.dt = dt;
-  const air = K && P.drag ? K.d : null; // a body not posed this frame stands still in the air
+  c.air = K && P.drag ? K.d : null; // a body not posed this frame stands still in the air
   // A held free cloth scans the full collider, as it always has.
   c.freeOn = !!c.free && c.wideFrames === 0;
   if (c.freeOn) refreshFree(c);
-  for (let s = 0; s < substeps; s++) substep(c, h, air);
+  return true;
+}
 
-  // Still means no vertex drifted more than SLEEP_SPEED would carry it over the window. Measured per frame or per
-  // substep, a hem vertex resting on a capsule that pops 0.07 mm every fifth frame and returns kept a skirt awake
-  // for good.
+// Still means no vertex drifted more than SLEEP_SPEED would carry it over the window. Measured per frame or per
+// substep, a hem vertex resting on a capsule that pops 0.07 mm every fifth frame and returns kept a skirt awake
+// for good.
+function settle(c, dt) {
+  const { pos, prev } = c;
   const ref = (c.ref ??= new Float32Array(pos.length)), limit = (SLEEP_SPEED * SLEEP_FRAMES * dt) ** 2;
   let still = !c.grab && c.stillFrames > 0;
   for (let o = 0; still && o < pos.length; o += 3) {
@@ -400,7 +455,36 @@ export function stepCloth(c, dt, substeps = c.grab || !c.home ? FULL_SUBSTEPS : 
   if (!still) ref.set(pos);
   c.stillFrames = c.grab ? 0 : still ? c.stillFrames + 1 : 1;
   if (c.stillFrames >= SLEEP_FRAMES) { c.asleep = true; c.stillFrames = 0; prev.set(pos); }
+}
+
+/**
+ * Advance one frame. Returns false when nothing moved: a cloth that has been
+ * still for a while goes to sleep and costs nothing until it is grabbed.
+ */
+export function stepCloth(c, dt, substeps = substepsOf(c)) {
+  if (!begin(c, dt, substeps)) return false;
+  for (let s = 0; s < substeps; s++) substep(c, c.h, c.air);
+  settle(c, dt);
   return true;
+}
+
+/**
+ * Advances two cloths a frame, each as stepCloth would alone, with their constraint passes interleaved. Returns a bit
+ * for each that stepped: 1 for a, 2 for b.
+ */
+export function stepCloths(a, b, dt) {
+  const na = substepsOf(a), nb = substepsOf(b), ra = begin(a, dt, na), rb = begin(b, dt, nb);
+  const sa = ra ? na : 0, sb = rb ? nb : 0, both = Math.min(sa, sb);
+  for (let s = 0; s < both; s++) {
+    integrate(a, a.h, a.air); integrate(b, b.h, b.air);
+    solvePair(a, a.h, b, b.h);
+    collide(a); collide(b);
+  }
+  for (let s = both; s < sa; s++) substep(a, a.h, a.air);
+  for (let s = both; s < sb; s++) substep(b, b.h, b.air);
+  if (ra) settle(a, dt);
+  if (rb) settle(b, dt);
+  return (ra ? 1 : 0) | (rb ? 2 : 0);
 }
 
 export function wake(c) { c.asleep = false; c.stillFrames = 0; }

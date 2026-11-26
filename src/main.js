@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { buildBody, buildTorso, buildHead, buildChokerRest, neckPoint } from './body.js';
 import { makeStocking, makeSkirt, makeShirt, legSkin, toeSkins, armSkins, STOCKING_BAND } from './garments.js';
-import { stepCloth, beginGrab, endGrab, resetCloth, computeStretch, computeNormals, gridIndex, STRIDE } from './cloth.js';
+import { stepCloth, stepCloths, beginGrab, endGrab, resetCloth, computeStretch, computeNormals, gridIndex, STRIDE } from './cloth.js';
 import { buildMotions, makeDriver, want, restart, drive, followView } from './motion.js';
 import { makeRig, track, follow, poseSet, angleOf, applyPose, stepSoft, makePose, blendPose, STAND, ROOT, BLEND } from './pose.js';
 import { nylonMaterial, setNylonColour } from './nylon.js';
@@ -778,6 +778,10 @@ function frameView(dt) {
 }
 
 let simMs = 0;
+function syncStepped(m, moved) {
+  if (moved || m.userData.dirty) syncMesh(m);
+  m.userData.dirty = false;
+}
 function advance(dt) {
   const t0 = performance.now();
   if (drag) {
@@ -799,11 +803,16 @@ function advance(dt) {
   setPose(fig, target);
   updateContact(fig);
   frameView(dt);
+  // The cloths step in pairs, which lets their constraint passes interleave.
+  let waiting = null;
   for (const m of fig.clothMeshes) {
     if (!m.visible) continue;
-    if (stepCloth(m.userData.cloth, dt) || m.userData.dirty) syncMesh(m);
-    m.userData.dirty = false;
+    if (!waiting) { waiting = m; continue; }
+    const moved = stepCloths(waiting.userData.cloth, m.userData.cloth, dt);
+    syncStepped(waiting, moved & 1); syncStepped(m, moved & 2);
+    waiting = null;
   }
+  if (waiting) syncStepped(waiting, stepCloth(waiting.userData.cloth, dt));
   simMs += (performance.now() - t0 - simMs) * 0.1;
 }
 
