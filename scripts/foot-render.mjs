@@ -20,15 +20,15 @@ const DEG = Math.PI / 180, DT = 1 / 60, HALF = 0.15;
 const norm = (v) => { const l = Math.hypot(...v); return v.map((c) => c / l); };
 const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 // f points from the scene toward the camera; `up` is a hint the image's up axis leans toward.
-const look = (f, centre, half = HALF, up = [0, 1, 0]) => {
+export const look = (f, centre, half = HALF, up = [0, 1, 0]) => {
   f = norm(f);
   const r = norm(cross(up, f));
   return { r, u: cross(f, r), f, centre, half };
 };
-const lightsFor = ({ r, u, f }) => [[norm(r.map((c, k) => -0.5 * c + 0.8 * u[k] + f[k])), 0.72], [norm(r.map((c, k) => 0.9 * c - 0.2 * u[k] + 0.6 * f[k])), 0.22]];
+export const lightsFor = ({ r, u, f }) => [[norm(r.map((c, k) => -0.5 * c + 0.8 * u[k] + f[k])), 0.72], [norm(r.map((c, k) => 0.9 * c - 0.2 * u[k] + 0.6 * f[k])), 0.22]];
 const SKIN = [214, 162, 128], NYLON = [96, 104, 128];
 
-const strip = (panels) => {
+export const strip = (panels) => {
   const out = Buffer.alloc(W * panels.length * H * 3);
   panels.forEach((rgb, k) => { for (let y = 0; y < H; y++) rgb.copy(out, (y * W * panels.length + k * W) * 3, y * W * 3, (y + 1) * W * 3); });
   return png(out, W * panels.length, H);

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { buildBody, buildTorso, buildHead, buildChokerRest, neckPoint, sweepLimb } from './body.js';
-import { makeStocking, makeSkirt, makeShirt, legSkin, toeSkins, STOCKING_BAND } from './garments.js';
+import { buildBody, buildTorso, buildHead, buildChokerRest, neckPoint } from './body.js';
+import { makeStocking, makeSkirt, makeShirt, legSkin, toeSkins, armSkins, STOCKING_BAND } from './garments.js';
 import { stepCloth, beginGrab, endGrab, resetCloth, computeStretch, computeNormals, gridIndex, STRIDE } from './cloth.js';
 import { buildMotions, makeDriver, want, restart, drive, followView } from './motion.js';
 import { makeRig, track, follow, poseSet, angleOf, applyPose, stepSoft, makePose, blendPose, STAND, ROOT, BLEND } from './pose.js';
@@ -378,10 +378,10 @@ function shadeSkin(g) {
 }
 
 // Skin follows the pose: its position buffer is the rig's live copy of the rest positions.
-function skinMesh(rig, { pos, rings, segs, startPole = false }, by) {
+function skinMesh(rig, { pos, index, rings, segs, startPole = false }, by) {
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.BufferAttribute(track(rig, pos, by), 3));
-  g.setIndex(new THREE.BufferAttribute(gridIndex(rings, segs, true, true, startPole), 1));
+  g.setIndex(new THREE.BufferAttribute(index ?? gridIndex(rings, segs, true, true, startPole), 1));
   g.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(pos.length), 3));
   g.setAttribute('aRest', new THREE.BufferAttribute(pos, 3));
   shadeSkin(g);
@@ -458,7 +458,7 @@ function buildFigure(shape, mods) {
   const skin = [
     ...body.legs.flatMap((leg) => [legSkin(leg), ...toeSkins(leg)].map((g) => skinMesh(rig, g, leg))),
     skinMesh(rig, buildTorso(body), BLEND),
-    ...body.arms.map((arm) => skinMesh(rig, sweepLimb(arm, 0, arm.length, 150, 40, 0, 6, 6), arm)),
+    ...body.arms.flatMap((arm) => armSkins(arm).map((g) => skinMesh(rig, g, arm))),
     skinMesh(rig, buildHead(body), ROOT),
   ];
   group.add(...skin);

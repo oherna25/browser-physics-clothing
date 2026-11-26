@@ -28,8 +28,15 @@
 // the underside out to the ribcage, and a capsule from apex to apex in every row at `bridge` of f, so fabric bridges
 // the cleft and the crease under the bust instead of following them in.
 // arm: right arm centre-line joints [x, y, z, r] from the shoulder pivot to the wrist, hanging in an A-pose; the
-// left arm mirrors x. hand: a mitten past the wrist, rows [d, halfWidth, r] at distance d along the forearm's line,
-// one capsule per interpolated row running front to back, so the palm faces the thigh.
+// left arm mirrors x. hand: owned by its arm, in the hand's frame at the wrist: d along the forearm's line, u across
+// it toward the thumb (forward), h toward the palm, which faces the thigh. palm: rows [d, u, halfWidth, h, r], one
+// capsule across the hand per interpolated row; the first is the wrist and takes the forearm's radius there, so the
+// round forearm does not stand proud of a thinner palm. digits: thumb first, each a chain of capsules from `root`
+// [d, u, h] along `dir` [d, u, h], its segments `lengths` long, `radii` at its nodes, each segment turned `flex`
+// degrees further toward `bend` [d, u, h] than the one before it, so curl and length are separate knobs. The
+// masculine tables were made from the feminine ones scaled: lengths by 1.032, the palm's widths by 1.05, the digits'
+// spacing, radii and depths by 1.08; the palm's widths grow less, which keeps its breadth within 47% of the hand's
+// length.
 // head: capsule pairs owned by the root. The first is a mid-skull row (its middle is where the head skin's rays
 // start), the second the top of the neck, the rest front-to-back rows stacked from chin to crown: an egg that is
 // deeper than it is wide and tapers to the jaw. No features.
@@ -156,7 +163,24 @@ export const BODIES = {
       [0.268, 0.935, 0.000, 0.030],
       [0.300, 0.838, 0.006, 0.020], // wrist
     ],
-    hand: [[0, 0.008, 0.019], [0.030, 0.019, 0.0165], [0.070, 0.025, 0.0135], [0.100, 0.024, 0.012], [0.135, 0.021, 0.010], [0.158, 0.014, 0.009], [0.170, 0.005, 0.008]],
+    hand: {
+      palm: [
+        [0.000, 0.000, 0.008, 0.000, 0.0200],
+        [0.020, -0.002, 0.018, 0.000, 0.0170],
+        [0.045, -0.004, 0.025, 0.000, 0.0140],
+        [0.068, -0.006, 0.029, -0.001, 0.0125],
+        [0.082, -0.004, 0.030, 0.000, 0.0115],
+        [0.090, 0.000, 0.027, 0.003, 0.0085],
+        [0.098, 0.002, 0.020, 0.005, 0.0065],
+      ],
+      digits: [
+        { root: [0.014, 0.012, 0.006], dir: [0.824, 0.481, 0.298], bend: [0.367, -0.489, -0.226], lengths: [0.044, 0.031, 0.019], radii: [0.0145, 0.0105, 0.0092, 0.0078], flex: [0, 12, 20] },
+        { root: [0.085, 0.0235, -0.002], dir: [1, 0.07, 0], bend: [0, 0, 1], lengths: [0.045, 0.0265, 0.0171], radii: [0.0095, 0.0085, 0.0075, 0.0065], flex: [12, 20, 10] },
+        { root: [0.088, 0.003, -0.002], dir: [1, 0.01, 0], bend: [0, 0, 1], lengths: [0.0465, 0.0287, 0.0168], radii: [0.0096, 0.0087, 0.0076, 0.0066], flex: [15, 24, 12] },
+        { root: [0.085, -0.017, -0.002], dir: [1, -0.05, 0], bend: [0, 0, 1], lengths: [0.0466, 0.0293, 0.0167], radii: [0.0090, 0.0082, 0.0072, 0.0063], flex: [18, 28, 14] },
+        { root: [0.075, -0.035, -0.001], dir: [1, -0.12, 0], bend: [0, 0, 1], lengths: [0.0395, 0.0233, 0.0155], radii: [0.0080, 0.0072, 0.0064, 0.0056], flex: [22, 32, 16] },
+      ],
+    },
     head: [
       [[0, 1.6241, -0.0313, 0.0723], [0, 1.6241, 0.0310, 0.0723]],
       [[0, 1.530, 0.012, 0.050], [0, 1.590, 0.012, 0.050]],
@@ -262,7 +286,24 @@ export const BODIES = {
       [0.290, 0.905, 0.000, 0.036],
       [0.320, 0.800, 0.006, 0.024], // wrist
     ],
-    hand: [[0, 0.010, 0.022], [0.032, 0.022, 0.019], [0.075, 0.029, 0.016], [0.108, 0.028, 0.0145], [0.145, 0.024, 0.012], [0.170, 0.016, 0.011], [0.182, 0.006, 0.010]],
+    hand: {
+      palm: [
+        [0.0000, 0.0000, 0.0084, 0.0000, 0.0240],
+        [0.0206, -0.0021, 0.0189, 0.0000, 0.0184],
+        [0.0464, -0.0042, 0.0263, 0.0000, 0.0151],
+        [0.0702, -0.0063, 0.0305, -0.0011, 0.0135],
+        [0.0846, -0.0042, 0.0315, 0.0000, 0.0124],
+        [0.0929, 0.0000, 0.0284, 0.0032, 0.0092],
+        [0.1011, 0.0021, 0.0210, 0.0054, 0.0070],
+      ],
+      digits: [
+        { root: [0.0144, 0.0130, 0.0065], dir: [0.824, 0.481, 0.298], bend: [0.367, -0.489, -0.226], lengths: [0.0454, 0.0320, 0.0196], radii: [0.0157, 0.0113, 0.0099, 0.0084], flex: [0, 12, 20] },
+        { root: [0.0877, 0.0254, -0.0022], dir: [1, 0.07, 0], bend: [0, 0, 1], lengths: [0.0464, 0.0273, 0.0176], radii: [0.0103, 0.0092, 0.0081, 0.0070], flex: [12, 20, 10] },
+        { root: [0.0908, 0.0032, -0.0022], dir: [1, 0.01, 0], bend: [0, 0, 1], lengths: [0.0480, 0.0296, 0.0173], radii: [0.0104, 0.0094, 0.0082, 0.0071], flex: [15, 24, 12] },
+        { root: [0.0877, -0.0184, -0.0022], dir: [1, -0.05, 0], bend: [0, 0, 1], lengths: [0.0481, 0.0302, 0.0172], radii: [0.0097, 0.0089, 0.0078, 0.0068], flex: [18, 28, 14] },
+        { root: [0.0774, -0.0378, -0.0011], dir: [1, -0.12, 0], bend: [0, 0, 1], lengths: [0.0408, 0.0240, 0.0160], radii: [0.0086, 0.0078, 0.0069, 0.0060], flex: [22, 32, 16] },
+      ],
+    },
     head: [
       [[0, 1.6304, -0.0333, 0.0773], [0, 1.6304, 0.0338, 0.0773]],
       [[0, 1.530, 0.012, 0.058], [0, 1.590, 0.012, 0.058]],
@@ -434,6 +475,17 @@ export const BUILD = {
   // mean each round moves a point, and the rings over which that share ramps in. face: how far every point of the
   // knit's triangles over the foot stays off the union at rest.
   foot: { probes: 64, top: 0.7, turn: [0.3, 0.7], groove: 0.0015, cap: 0.004, wrap: { rounds: 10, pull: 0.5, ramp: 4 }, face: 0.001 },
+  // The hand's skin is one surface over a smooth union of its capsules, so the digits grow out of the palm without a
+  // seam. Each blend is the width k of a polynomial smooth minimum, which fills the crease between two parts and stands
+  // at most k / 4 off them. wrist: the forearm's last capsules and the palm. digit: the palm and each finger. thumb: the
+  // palm and the thumb, wide enough to read as the ball of the thumb. web: the fingers with each other, k up to `from`
+  // past the palm's last row and gone `reach` beyond that, so the webs close the knuckles' gaps and the fingers stand
+  // apart past them. Where a blend ends across a gap barely wider than k, it leaves a crevice narrower than the grid
+  // can follow and the mesh folds there, so the tables open the thumb away from the palm past its web and keep the
+  // fingers' gaps over 3 mm. cell: the mesh's grid spacing. relax: rounds that even out the vertices along the surface.
+  // join: the hand's skin starts `from` up the forearm `tuck` inside its capsules, so the arm's skin hides its open
+  // edge, and within `ramp` stands `tuck` outside them, so it hides the end of the arm's skin.
+  hand: { wrist: 0.003, digit: 0.004, thumb: 0.006, web: { k: 0.006, from: -0.004, reach: 0.016 }, cell: 0.002, relax: 3, join: { from: 0.03, ramp: 0.016, tuck: 0.00025 } },
   squeeze: {
     below: 0.07, above: 0.06, // refined window around the band's top edge
     maxPiece: 0.005,

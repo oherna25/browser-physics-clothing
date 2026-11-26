@@ -45,10 +45,11 @@ Open the URL that Vite prints, normally `http://localhost:5173/`.
 | `npm test` | Runs the headless simulation test in Node. It takes about 3 minutes. |
 | `node scripts/bust-render.mjs <outDir> 0,0.5,1` | Renders the torso skin to PNG files without a browser. Add `--wire`, `--jump`, or `--walk`. |
 | `node scripts/foot-render.mjs <outDir>` | Renders both bodies' feet to PNG files, bare and in the settled stocking: six views at rest, the walk's push-off and tiptoe. It prints how many skin pixels show through the stocking and paints them magenta. Add `--wire`. |
+| `node scripts/hand-render.mjs <outDir>` | Renders both bodies' hands to PNG files at rest and at the walk's two arm-swing extremes, with the skirt's cloth stepped through the walk: the right hand from the back, the palm, the thumb's side, past the fingertips and from three quarters, and the figure from the side with the right hand close from the front and the side. It prints how near the skirt's cloth comes to each hand at those poses and over a whole cycle. Add `--wire`. |
 
 ## How it works
 
-The body is a set of tapered capsules. That one capsule model produces three things: the skin mesh, the rest shape of each garment, and the colliders the cloth pushes against. Because all three come from the same source, the cloth cannot disagree with the surface it sits on.
+The body is a set of tapered capsules. That one capsule model produces three things: the skin mesh, the rest shape of each garment, and the colliders the cloth pushes against. Because all three come from the same source, the cloth cannot disagree with the surface it sits on. Most of the skin is swept around chains of capsules. Each hand's skin is one surface over a smooth blend of its palm's and fingers' capsules, so the fingers part from the palm without a seam.
 
 The cloth is a position-based solver. Each garment is a grid of points joined by stretch, shear, and bend constraints. Each frame, the solver moves the points, satisfies the constraints, and pushes points out of the capsules.
 
@@ -71,6 +72,7 @@ A pose is a set of joint angles. One deformation field in `src/pose.js` moves th
 | `test/sim.test.mjs` | The headless test. It asserts measured clearances, shapes, and timings. |
 | `scripts/bust-render.mjs` | A software renderer for checking the skin without a browser. |
 | `scripts/foot-render.mjs` | The same renderer pointed at the feet. |
+| `scripts/hand-render.mjs` | The same renderer pointed at the hands. |
 
 ## Notes for AI agents
 
@@ -111,6 +113,7 @@ The sliders rebuild the body on the `change` event, not on `input`. To set one f
 
 - The cloths do not collide with each other.
 - The shirts have no sleeves.
+- The fingers do not bend. Each hand is rigid with its forearm.
 - A pose moves the body in the `y`-`z` plane only: up and down, and front to back. A pose moves nothing along `x`.
 
 ## Licence

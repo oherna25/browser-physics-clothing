@@ -1,7 +1,7 @@
 // Garment construction shared by the browser app and the headless test.
 
 import { makeGridCloth, setCollider, concatSegs, nearest, gridIndex, STRIDE } from './cloth.js';
-import { sweepLimb, buildSkirt, buildShirtRest, ringRadii, SKIRT_WAIST_Y } from './body.js';
+import { sweepLimb, buildSkirt, buildShirtRest, ringRadii, handSkin, SKIRT_WAIST_Y } from './body.js';
 import { SHIRT, STOCKING_MOTION, SKIRT_MOTION, BUILD } from './presets.js';
 import { bounceSlack, onFoot } from './pose.js';
 
@@ -49,6 +49,14 @@ export function toeSkins(leg) {
     const nseg = 2 * Math.ceil(Math.PI * toe.r / TOE_PITCH);
     return sweepLimb(toe, 0, toe.length, Math.ceil(toe.length / TOE_PITCH) + 1, nseg, 0, 4, 4);
   });
+}
+
+const ARM_PITCH = 0.0047, ARM_SEGS = 40;
+
+// The arm from the shoulder to where the hand's skin covers it, and the hand.
+export function armSkins(arm) {
+  const { from, ramp } = BUILD.hand.join, s1 = arm.length - from + ramp + 2 * ARM_PITCH;
+  return [sweepLimb({ ...arm, segs: arm.forearm }, 0, s1, Math.ceil(s1 / ARM_PITCH) + 1, ARM_SEGS, 0, 0, 6), handSkin(arm)];
 }
 
 // On the foot some rays graze a toe or leave the union steeply, so they end nearer it than the sweep's offset and the

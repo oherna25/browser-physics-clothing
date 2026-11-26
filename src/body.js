@@ -282,23 +282,45 @@ function footRows(x, side, rows, step) {
   });
 }
 
-const HAND_STEP = 0.004; // row spacing that keeps the ripple between 1 cm thick rows under 0.2 mm
+// Palm rows 4 mm apart ripple under 0.2 mm between rows 1 cm thick. The coarse union, which cloth reads only while
+// dragged, spaces them twice as far.
+const HAND_STEP = 0.004, HAND_COARSE = 2;
 
-// An arm hangs from the ball of its shoulder; the mitten continues the forearm's line past the wrist.
+const unit = (v) => { const l = Math.hypot(...v); return v.map((c) => c / l); };
+const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+
+// A digit's nodes [d, u, h, r] in the hand's frame.
+function digitNodes({ root, dir, bend, lengths, radii, flex }) {
+  const e = unit(dir), b = unit(bend.map((c, k) => c - dot(bend, e) * e[k])), out = [[...root, radii[0]]];
+  let a = 0;
+  lengths.forEach((l, k) => {
+    a += flex[k] * Math.PI / 180;
+    const c = Math.cos(a), s = Math.sin(a);
+    out.push([0, 1, 2].map((q) => out[k][q] + l * (c * e[q] + s * b[q])).concat(radii[k + 1]));
+  });
+  return out;
+}
+
+// An arm hangs from the ball of its shoulder; the palm continues the forearm's line past the wrist. The hand's frame
+// is built on the right arm and mirrored in x, so the two hands are exact mirror images.
 export function buildArm(side, { arm, hand }) {
   const pts = subdivide(arm, 3).map(([x, y, z, r]) => [side * x, y, z, r]);
   const [w, v] = [arm[arm.length - 1], arm[arm.length - 2]];
-  const l = Math.hypot(w[0] - v[0], w[1] - v[1], w[2] - v[2]);
-  const dir = [side * (w[0] - v[0]) / l, (w[1] - v[1]) / l, (w[2] - v[2]) / l];
-  const wrist = pts[pts.length - 1];
-  const along = (d) => [wrist[0] + dir[0] * d, wrist[1] + dir[1] * d, wrist[2] + dir[2] * d];
-  const rows = resample(hand, [0], HAND_STEP).map(([d, hw, r]) => {
-    const [x, y, z] = along(d);
-    return [[x, y, z - hw, r], [x, y, z + hw, r]];
-  });
-  const segs = packSegs([...chainOf(pts), ...rows]);
-  const line = [...pts, ...hand.slice(1).map(([d]) => [...along(d), 0])];
-  return { kind: 'arm', side, segs, segsCoarse: segs, ...centreline(line) };
+  const a = unit([w[0] - v[0], w[1] - v[1], w[2] - v[2]]), c = unit([-a[2] * a[0], -a[2] * a[1], 1 - a[2] * a[2]]);
+  const p = [a[1] * c[2] - a[2] * c[1], a[2] * c[0] - a[0] * c[2], a[0] * c[1] - a[1] * c[0]];
+  const at = (d, u, h, r) => [side * (w[0] + a[0] * d + c[0] * u + p[0] * h), w[1] + a[1] * d + c[1] * u + p[1] * h, w[2] + a[2] * d + c[2] * u + p[2] * h, r];
+  const rowsAt = (step) => resample(hand.palm, [0], step).map(([d, u, hw, h, r]) => [at(d, u - hw, h, r), at(d, u + hw, h, r)]);
+  const rows = rowsAt(HAND_STEP), nodes = hand.digits.map(digitNodes), digits = nodes.map((t) => t.map(([d, u, h, r]) => at(d, u, h, r)));
+  const fingers = digits.flatMap((t) => chainOf(t)), segs = packSegs([...chainOf(pts), ...rows, ...fingers]);
+  const segsCoarse = packSegs([...chainOf(pts), ...rowsAt(HAND_STEP * HAND_COARSE), ...fingers]);
+  const mirror = ([x, y, z]) => [side * x, y, z];
+  const local = subdivide(arm, 3).map(([x, y, z, r]) => [a, c, p].map((e) => (x - w[0]) * e[0] + (y - w[1]) * e[1] + (z - w[2]) * e[2]).concat(r));
+  return {
+    kind: 'arm', side, segs, segsCoarse, ...centreline(pts), forearm: packSegs(chainOf(pts)), palm: packSegs(rows),
+    digits: digits.map((t) => packSegs(chainOf(t))),
+    frame: { o: at(0, 0, 0, 0).slice(0, 3), a: mirror(a), c: mirror(c), p: mirror(p) },
+    hand: { table: hand, forearm: local, digits: nodes, at },
+  };
 }
 
 const hit = { d: 0, nx: 0, ny: 0, nz: 0 };
@@ -440,6 +462,231 @@ export function sweepLimb(limb, s0, s1, rings, nseg, offset, capRings, startRing
     march(limb.segs, a.x, a.y, a.z, -a.tx, -a.ty, -a.tz, offset, pos, o + 3);
   }
   return { pos, rings: total, segs: nseg, startPole: startRings > 0 };
+}
+
+// The skin's palm rows. The colliders' HAND_STEP rows ripple by 0.17 mm, which the hand's grid resolves into bands.
+const HAND_SKIN_STEP = 0.001;
+
+const smin = (a, b, k) => {
+  if (!(k > 0)) return Math.min(a, b);
+  const h = Math.max(k - Math.abs(a - b), 0) / k;
+  return Math.min(a, b) - h * h * k / 4;
+};
+
+// Capsules of a chain of [d, u, h, r], packed nine to a capsule as [ad, au, ah, ar, dd, du, dh, dr, 1 / length^2],
+// and the distance to their union by the same formula the colliders use.
+const localCaps = (chain) => Float64Array.from(chain.slice(1).flatMap((b, k) => {
+  const a = chain[k], d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+  return [...a, ...d, b[3] - a[3], 1 / dot(d, d)];
+}));
+function capsDist(c, x, y, z) {
+  let m = Infinity;
+  for (let o = 0; o < c.length; o += 9) {
+    const px = x - c[o], py = y - c[o + 1], pz = z - c[o + 2], dx = c[o + 4], dy = c[o + 5], dz = c[o + 6];
+    const t = Math.min(Math.max((px * dx + py * dy + pz * dz) * c[o + 8], 0), 1), qx = px - dx * t, qy = py - dy * t, qz = pz - dz * t;
+    m = Math.min(m, Math.sqrt(qx * qx + qy * qy + qz * qz) - c[o + 3] - c[o + 7] * t);
+  }
+  return m;
+}
+
+// Distance to the union of the palm's rows, which run in order of d: only rows whose d lies within the best distance
+// so far plus the widest row beyond them can be nearer.
+function palmDist(rows) {
+  const n = rows.length, [D, U, HW, H, R] = [0, 1, 2, 3, 4].map((c) => Float64Array.from(rows, (q) => q[c]));
+  const up = R.slice(), down = R.slice();
+  for (let k = n - 2; k >= 0; k--) up[k] = Math.max(up[k], up[k + 1]);
+  for (let k = 1; k < n; k++) down[k] = Math.max(down[k], down[k - 1]);
+  const row = (k, d, u, h) => {
+    const x = d - D[k], y = h - H[k], z = Math.max(Math.abs(u - U[k]) - HW[k], 0);
+    return Math.sqrt(x * x + y * y + z * z) - R[k];
+  };
+  return (d, u, h) => {
+    let lo = 0, hi = n - 1;
+    while (hi - lo > 1) { const m = (lo + hi) >> 1; if (D[m] < d) lo = m; else hi = m; }
+    let best = Math.min(row(lo, d, u, h), row(hi, d, u, h));
+    for (let k = hi + 1; k < n && D[k] - d - up[k] < best; k++) best = Math.min(best, row(k, d, u, h));
+    for (let k = lo - 1; k >= 0 && d - D[k] - down[k] < best; k--) best = Math.min(best, row(k, d, u, h));
+    return best;
+  };
+}
+
+// The hand as a field in its own frame [d, u, h], negative inside: the forearm's last capsules and the palm blended,
+// that blended into the fingers and, separately, into the thumb. The fingers blend with each other only toward the
+// palm (BUILD.hand.web), and the thumb never does with them.
+function handField({ table, forearm, digits }) {
+  const B = BUILD.hand, J = B.join, palm = palmDist(resample(table.palm, [0], HAND_SKIN_STEP)), tail = localCaps(forearm.slice(-4));
+  const [thumb, ...fingers] = digits.map(localCaps), end = table.palm[table.palm.length - 1][0] + B.web.from;
+  return (d, u, h) => {
+    const tuck = J.tuck * (1 - 2 * smoothstep(-J.from, J.ramp - J.from, d));
+    const P = smin(capsDist(tail, d, u, h) + tuck, palm(d, u, h), B.wrist), kw = B.web.k * (1 - smoothstep(end, end + B.web.reach, d));
+    let W = capsDist(fingers[0], d, u, h);
+    for (let k = 1; k < fingers.length; k++) W = smin(W, capsDist(fingers[k], d, u, h), kw);
+    return Math.min(smin(P, W, B.digit), smin(P, capsDist(thumb, d, u, h), B.thumb));
+  };
+}
+
+// From (x, y, z) onto the field's zero level along the gradient there, written to out[o..o+2]. The start is within a
+// grid cell of the level, where the gradient barely turns, so it is taken once.
+function project(field, x, y, z, out, o) {
+  const e = 1e-6;
+  let f = field(x, y, z);
+  const gx = (field(x + e, y, z) - f) / e, gy = (field(x, y + e, z) - f) / e, gz = (field(x, y, z + e) - f) / e, g2 = gx * gx + gy * gy + gz * gz;
+  for (let it = 0; it < 8 && Math.abs(f) > 1e-7 && g2 > 1e-6; it++) {
+    x -= f * gx / g2; y -= f * gy / g2; z -= f * gz / g2;
+    f = field(x, y, z);
+  }
+  out[o] = x; out[o + 1] = y; out[o + 2] = z;
+}
+
+// A grid cell's twelve edges, each as the corners [i, j, k] it runs between: edge q runs along axis q % 3 from the
+// corner whose other two bits are q / 3.
+const edgeOf = (ax, b) => ax + 3 * (b[(ax + 1) % 3] + 2 * b[(ax + 2) % 3]);
+const CELL_EDGES = Array.from({ length: 12 }, (_, q) => {
+  const ax = q % 3, b = [0, 0, 0], r = Math.floor(q / 3);
+  b[(ax + 1) % 3] = r & 1; b[(ax + 2) % 3] = r >> 1;
+  const e = b.slice(); e[ax] = 1;
+  return [b, e];
+});
+// Its six faces, each as its corners in turn and the edges between them: edge k runs from corner k to corner k + 1.
+const CELL_FACES = [0, 1, 2].flatMap((f) => [0, 1].map((side) => {
+  const g = (f + 1) % 3, h = (f + 2) % 3, corners = [[0, 0], [1, 0], [1, 1], [0, 1]].map(([x, y]) => {
+    const c = [0, 0, 0];
+    c[f] = side; c[g] = x; c[h] = y;
+    return c;
+  });
+  const edges = corners.map((c, k) => {
+    const n = corners[(k + 1) % 4];
+    return edgeOf(c[g] !== n[g] ? g : h, c.map((q, i) => Math.min(q, n[i])));
+  });
+  return { corners, edges };
+}));
+
+/**
+ * Surface nets: a vertex for each piece of the zero level of `field` in every grid cell it crosses, one quad across
+ * every grid edge it crosses, triangles wound to face out. A cell face whose corners alternate in sign is crossed
+ * twice; which pairs of its edges each crossing joins follows the sign at the saddle of the face's bilinear field, so
+ * a cell the level passes through twice there gets two vertices and the mesh stays manifold. The grid spans lo..hi,
+ * `cell` apart; blocks of B cells whose corners all stand further from the level than the block's diagonal are not
+ * sampled inside, as the field grows no faster than distance. Every vertex lands on the level, then `relax` rounds
+ * move each toward its neighbours' mean and back onto it. The mesh is open where the level leaves the grid at its
+ * d = lo face.
+ */
+function surfaceNets(field, lo, hi, cell, relax) {
+  const [nx, ny, nz] = [0, 1, 2].map((k) => Math.ceil((hi[k] - lo[k]) / cell) + 1), B = 4, reach = B * cell * Math.sqrt(3);
+  const id = (i, j, k) => (i * ny + j) * nz + k, v = new Float64Array(nx * ny * nz).fill(NaN);
+  const value = (i, j, k) => { const q = id(i, j, k); if (Number.isNaN(v[q])) v[q] = field(lo[0] + i * cell, lo[1] + j * cell, lo[2] + k * cell); return v[q]; };
+  for (let I = 0; I < nx - 1; I += B) for (let J = 0; J < ny - 1; J += B) for (let K = 0; K < nz - 1; K += B) {
+    const [i1, j1, k1] = [Math.min(I + B, nx - 1), Math.min(J + B, ny - 1), Math.min(K + B, nz - 1)];
+    const f = [I, i1].flatMap((i) => [J, j1].flatMap((j) => [K, k1].map((k) => value(i, j, k))));
+    const fill = f.every((q) => q > reach) ? reach : f.every((q) => q < -reach) ? -reach : null;
+    for (let i = I; i <= i1; i++) for (let j = J; j <= j1; j++) for (let k = K; k <= k1; k++) if (fill === null) value(i, j, k); else if (Number.isNaN(v[id(i, j, k)])) v[id(i, j, k)] = fill;
+  }
+  const corner = (c0, c) => v[c0 + id(...c)], edges = CELL_EDGES.map(([b, e]) => [id(...b), id(...e), b, e]);
+  const corners = [0, 1].flatMap((i) => [0, 1].flatMap((j) => [0, 1].map((k) => id(i, j, k))));
+  // The piece of the level each crossed edge of a cell belongs to, -1 where an edge is not crossed, and their count.
+  const piece = new Int8Array(12), root = new Int8Array(12);
+  const find = (q) => { while (root[q] !== q) q = root[q]; return q; };
+  const pieces = (c0) => {
+    for (let q = 0; q < 12; q++) root[q] = q;
+    for (const { corners, edges: e } of CELL_FACES) {
+      const f = corners.map((c) => corner(c0, c)), cut = f.map((q, k) => (q < 0) !== (f[(k + 1) % 4] < 0));
+      const n = cut.filter(Boolean).length;
+      if (n === 2) { const [a, b] = e.filter((_, k) => cut[k]); root[find(a)] = find(b); }
+      if (n === 4) {
+        const den = f[0] + f[2] - f[1] - f[3], saddle = den ? (f[0] * f[2] - f[1] * f[3]) / den : f[0] + f[1] + f[2] + f[3];
+        // Each crossing cuts off a corner of the sign the saddle does not have.
+        for (let k = 0; k < 4; k++) if ((f[k] < 0) !== (saddle < 0)) root[find(e[(k + 3) % 4])] = find(e[k]);
+      }
+    }
+    let m = 0;
+    const label = new Int8Array(12).fill(-1);
+    for (let q = 0; q < 12; q++) {
+      const [ob, oe] = edges[q];
+      if ((v[c0 + ob] < 0) === (v[c0 + oe] < 0)) { piece[q] = -1; continue; }
+      const r = find(q);
+      if (label[r] < 0) label[r] = m++;
+      piece[q] = label[r];
+    }
+    return m;
+  };
+  const vert = new Int32Array(nx * ny * nz).fill(-1), split = new Map(), at = [];
+  for (let i = 0; i < nx - 1; i++) for (let j = 0; j < ny - 1; j++) for (let k = 0; k < nz - 1; k++) {
+    const c0 = id(i, j, k), inside = corners.reduce((n, q) => n + (v[c0 + q] < 0), 0);
+    if (inside === 0 || inside === 8) continue;
+    const m = pieces(c0);
+    vert[c0] = at.length / 3;
+    if (m > 1) split.set(c0, piece.slice());
+    for (let p = 0; p < m; p++) {
+      let n = 0, sx = 0, sy = 0, sz = 0;
+      for (let q = 0; q < 12; q++) {
+        if (piece[q] !== p) continue;
+        const [ob, oe, b, e] = edges[q], v0 = v[c0 + ob], t = v0 / (v0 - v[c0 + oe]);
+        sx += b[0] + (e[0] - b[0]) * t; sy += b[1] + (e[1] - b[1]) * t; sz += b[2] + (e[2] - b[2]) * t;
+        n++;
+      }
+      at.push(lo[0] + (i + sx / n) * cell, lo[1] + (j + sy / n) * cell, lo[2] + (k + sz / n) * cell);
+    }
+  }
+  const pos = new Float64Array(at.length), index = [];
+  for (let q = 0; q < pos.length; q += 3) project(field, at[q], at[q + 1], at[q + 2], pos, q);
+  const len = (a, b) => Math.hypot(pos[a * 3] - pos[b * 3], pos[a * 3 + 1] - pos[b * 3 + 1], pos[a * 3 + 2] - pos[b * 3 + 2]);
+  const vertexOf = (c, q) => vert[c] + (split.get(c)?.[q] ?? 0), step = [ny * nz, nz, 1];
+  for (let i = 0; i < nx - 1; i++) for (let j = 0; j < ny - 1; j++) for (let k = 0; k < nz - 1; k++) {
+    const c0 = id(i, j, k), v0 = v[c0], ijk = [i, j, k];
+    for (let ax = 0; ax < 3; ax++) {
+      if ((v0 < 0) === (v[c0 + step[ax]] < 0) || ijk[(ax + 1) % 3] < 1 || ijk[(ax + 2) % 3] < 1) continue;
+      // The four cells around the edge, turning about its axis, and the edge as each of them numbers it.
+      const s1 = step[(ax + 1) % 3], s2 = step[(ax + 2) % 3];
+      const q = [vertexOf(c0 - s1 - s2, ax + 9), vertexOf(c0 - s2, ax + 6), vertexOf(c0, ax), vertexOf(c0 - s1, ax + 3)];
+      if (v0 >= 0) [q[1], q[3]] = [q[3], q[1]];
+      if (len(q[0], q[2]) <= len(q[1], q[3])) index.push(q[0], q[1], q[2], q[0], q[2], q[3]);
+      else index.push(q[0], q[1], q[3], q[1], q[2], q[3]);
+    }
+  }
+  // Neighbours from the triangles; a vertex on the open edge, where an edge has one triangle, stays put.
+  const n = pos.length / 3, count = new Map(), nb = Array.from({ length: n }, () => new Set());
+  for (let t = 0; t < index.length; t += 3) for (let s = 0; s < 3; s++) {
+    const a = index[t + s], b = index[t + (s + 1) % 3], key = a < b ? a * n + b : b * n + a;
+    count.set(key, (count.get(key) ?? 0) + 1);
+    nb[a].add(b); nb[b].add(a);
+  }
+  const fixed = new Uint8Array(n);
+  for (const [key, c] of count) if (c !== 2) { fixed[Math.floor(key / n)] = 1; fixed[key % n] = 1; }
+  for (let r = 0; r < relax; r++) {
+    const was = pos.slice();
+    for (let a = 0; a < n; a++) {
+      if (fixed[a]) continue;
+      const m = [0, 0, 0];
+      for (const b of nb[a]) for (let c = 0; c < 3; c++) m[c] += was[b * 3 + c] / nb[a].size;
+      project(field, (was[a * 3] + m[0]) / 2, (was[a * 3 + 1] + m[1]) / 2, (was[a * 3 + 2] + m[2]) / 2, pos, a * 3);
+    }
+  }
+  return { pos, index: new Uint32Array(index) };
+}
+
+// The hand's skin in its own frame, made once per hand table: both arms of a body, and every build of it, share it.
+const handMeshes = new WeakMap();
+function handMesh(H) {
+  if (handMeshes.has(H.table)) return handMeshes.get(H.table);
+  const { cell, relax, join } = BUILD.hand, lo = [-join.from, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity], grow = (d, u, h, r) => {
+    lo[1] = Math.min(lo[1], u - r); lo[2] = Math.min(lo[2], h - r);
+    hi[0] = Math.max(hi[0], d + r); hi[1] = Math.max(hi[1], u + r); hi[2] = Math.max(hi[2], h + r);
+  };
+  for (const t of H.digits) for (const q of t) grow(...q);
+  for (const [d, u, hw, h, r] of H.table.palm) { grow(d, u - hw, h, r); grow(d, u + hw, h, r); }
+  for (const [d, u, h, r] of H.forearm.slice(-4)) if (d > -join.from - r) grow(d, u, h, r);
+  const mesh = surfaceNets(handField(H), lo.map((q, k) => q - (k ? 2 * cell : 0)), hi.map((q) => q + 2 * cell), cell, relax);
+  handMeshes.set(H.table, mesh);
+  return mesh;
+}
+
+/** The hand's skin, { pos, index }: one surface over the palm and every digit, open only inside the forearm's skin. */
+export function handSkin(arm) {
+  const { pos: q, index: ix } = handMesh(arm.hand), pos = new Float32Array(q.length), index = ix.slice();
+  for (let o = 0; o < q.length; o += 3) pos.set(arm.hand.at(q[o], q[o + 1], q[o + 2], 0).slice(0, 3), o);
+  // The left hand's frame is mirrored, which turns every triangle over.
+  if (arm.side < 0) for (let t = 0; t < index.length; t += 3) [index[t + 1], index[t + 2]] = [index[t + 2], index[t + 1]];
+  return { pos, index };
 }
 
 // Mean distance from the leg centreline of each ring of a sweepLimb tube; `rings` as sweepLimb takes it.

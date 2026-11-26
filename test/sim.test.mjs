@@ -3,8 +3,8 @@
 
 import assert from 'node:assert/strict';
 import { buildBody, buildTorso, buildHead, buildChokerRest, buildShirtRest, buildSkirt, sweepLimb, ringRadii, SKIRT_OFFSET } from '../src/body.js';
-import { BODIES, BUILD, DEFAULTS, POSE, MOTIONS, SHIRT, SHIRT_STYLES, SHIRT_COLORS, CHOKER, CHOKER_STYLES, CHOKER_COLORS, STOCKING_COLORS } from '../src/presets.js';
-import { makeStocking, makeSkirt, makeShirt, legSkin, toeSkins, STOCKING_BAND, SKIRT_THICKNESS } from '../src/garments.js';
+import { BODIES, BUILD, DEFAULTS, POSE, MOTIONS, MOTION_BLEND, SHIRT, SHIRT_STYLES, SHIRT_COLORS, CHOKER, CHOKER_STYLES, CHOKER_COLORS, STOCKING_COLORS } from '../src/presets.js';
+import { makeStocking, makeSkirt, makeShirt, legSkin, toeSkins, armSkins, STOCKING_BAND, SKIRT_THICKNESS } from '../src/garments.js';
 import { colourCss } from '../src/colourway.js';
 import { stepCloth, beginGrab, endGrab, computeStretch, nearest, resetCloth, concatSegs, gridIndex, computeNormals, STRIDE } from '../src/cloth.js';
 import { makeRig, track, applyPose, stepSoft, makePose, blendPose, feetOf, STAND, ROOT, BLEND } from '../src/pose.js';
@@ -226,9 +226,6 @@ for (const [id, shape] of Object.entries(BODIES)) {
 }
 
 // --- Arms and head ---
-// The mesh sizes main.js draws: rings, segments, end cap rings, start cap rings.
-const ARM_MESH = [150, 40, 6, 6];
-const armSkin = (arm) => sweepLimb(arm, 0, arm.length, ARM_MESH[0], ARM_MESH[1], 0, ARM_MESH[2], ARM_MESH[3]);
 const ringAt = (g, i, j) => (i * g.segs + ((j % g.segs) + g.segs) % g.segs) * 3;
 // Off-surface error, longest edge and neighbour-chord deviation of a ring grid, as for the torso skin.
 function gridQuality(g, segs) {
@@ -262,7 +259,8 @@ function inward(pos, index, segs) {
 }
 // --- Chest ---
 // Captured from the masculine body before it gained a build slider for the chest: segments, torso skin and two shirts' rest shapes.
-const MASCULINE = { segs: [5060, 7157802.317767003, 331450915.2203044], torso: [18627, 7370.717243687914, 360944.43242050096], tank: [7680, 3116.428964460767, 152514.54777717707], tube: [3264, 1343.579700960152, 65313.26069611008] };
+// Segments re-captured when the hands gained fingers.
+const MASCULINE = { segs: [4980, 7172939.361483829, 333135918.8156167], torso: [18627, 7370.717243687914, 360944.43242050096], tank: [7680, 3116.428964460767, 152514.54777717707], tube: [3264, 1343.579700960152, 65313.26069611008] };
 {
   const shape = BODIES.feminine, bare = buildBody({ ...shape, chest: undefined });
   // Front (+z) of the union at (x, y): bisect in from outside.
@@ -574,11 +572,11 @@ const MASCULINE = { segs: [5060, 7157802.317767003, 331450915.2203044], torso: [
   }
 
   // Never stepped, posing is what it was before the bounce existed: one posed frame's live capsules and torso skin,
-  // bit for bit, captured from the code before it.
+  // bit for bit, captured from the code before it. Capsules re-captured when the hands gained fingers.
   const POSED = makePose({ root: { y: -0.04, z: 0.03, pitch: 0.15 }, hipL: 0.4, kneeL: 0.5, hipR: -0.2, shoulderL: 0.6, elbowL: 0.7, shoulderR: -0.3 });
   const RIGID = {
-    0.5: { segs: [11030, 37950022.319867425, 1821514599.7489998], torso: [34851, 14315.303486065002, 701343.0117014081] },
-    1: { segs: [11770, 35694656.20723153, 1770249233.6620061], torso: [34851, 14352.373351381017, 702988.1029380776] },
+    0.5: { segs: [10950, 37934056.03454191, 1821103002.8454363], torso: [34851, 14315.303486065002, 701343.0117014081] },
+    1: { segs: [11690, 35678689.92190602, 1768692885.4919965], torso: [34851, 14352.373351381017, 702988.1029380776] },
   };
   for (const size of [DEFAULTS.chest, 1]) {
     const body = at(size).body, rig = makeRig(body), skin = track(rig, buildTorso(body).pos, BLEND);
@@ -595,11 +593,13 @@ const crowns = {};
 for (const [id, shape] of Object.entries(BODIES)) for (const build of [0, 1]) {
   console.log(`\n== arms and head: ${id} thigh ${build} glute ${build}`);
   const body = bodyOf(shape, build, build);
-  const [L, R] = body.arms.map(armSkin);
+  // Each arm's skin from the shoulder to under the hand's, and the hand's. The arm's skin ends inside the palm, so it
+  // is held to the forearm's capsules; the hands are checked under Hands.
+  const [[L, LH], [R, RH]] = body.arms.map(armSkins);
   const armSegs = concatSegs(body.arms[0].segs, body.arms[1].segs);
   for (const [g, arm, name] of [[L, body.arms[0], 'left'], [R, body.arms[1], 'right']]) {
-    const q = gridQuality(g, arm.segs), bad = inward(g.pos, gridIndex(g.rings, g.segs, true, true, true), arm.segs);
-    console.log(`${name} arm skin ${g.rings} x ${g.segs}: off its capsules ${mm(q.off)} mm, longest edge ${mm(q.edge)} mm, neighbour-chord deviation ${mm(q.spike)} mm, ${bad} inward triangles`);
+    const q = gridQuality(g, arm.forearm), bad = inward(g.pos, gridIndex(g.rings, g.segs, true, true, true), arm.forearm);
+    console.log(`${name} arm skin ${g.rings} x ${g.segs}: off the forearm's capsules ${mm(q.off)} mm, longest edge ${mm(q.edge)} mm, neighbour-chord deviation ${mm(q.spike)} mm, ${bad} inward triangles`);
     assert.ok(q.off < 0.0015, `${id}: ${name} arm skin strays from its capsules`);
     assert.ok(q.edge < 0.03 && q.spike < 0.006, `${id}: holes or spikes in the ${name} arm skin`);
     assert.equal(bad, 0, `${id}: ${name} arm skin faces inward`);
@@ -613,7 +613,7 @@ for (const [id, shape] of Object.entries(BODIES)) for (const build of [0, 1]) {
   for (let o = L.rings * L.segs * 3; o < L.pos.length; o += 3) asym = Math.max(asym, Math.hypot(L.pos[o] + R.pos[o], L.pos[o + 1] - R.pos[o + 1], L.pos[o + 2] - R.pos[o + 2]));
   const n = shape.pelvis.length + shape.glutes.length, hips = concatSegs(body.legs[0].segs, body.legs[1].segs, body.torsoSegs.subarray(0, n * STRIDE));
   let low = Infinity, clear = Infinity, clearAt = '';
-  for (const g of [L, R]) for (let i = 0; i < g.pos.length; i += 3) {
+  for (const g of [L, R, LH, RH]) for (let i = 0; i < g.pos.length; i += 3) {
     low = Math.min(low, g.pos[i + 1]);
     const d = nearest(hips, g.pos[i], g.pos[i + 1], g.pos[i + 2], hit).d;
     if (d < clear) { clear = d; clearAt = at(g.pos, i); }
@@ -784,6 +784,176 @@ for (const [id, shape] of Object.entries(BODIES)) {
   assert.ok(clear >= 0, `${id}: settled stocking ${mm(clear)} mm under the foot's skin`);
 }
 assert.ok(footLength.masculine > footLength.feminine, 'the masculine foot is not the longer');
+
+// --- Hands ---
+// Read on the right hand in its own frame: d along the forearm past the wrist, u toward the thumb, h toward the palm's
+// side. Lengths, curls and the palm's breadth are taken off the capsules the skin is drawn over and the cloth collides
+// with, each digit straightened along its chain; the skin is held within 2 mm of them below.
+const handSize = {};
+for (const [id, shape] of Object.entries(BODIES)) {
+  const body = bodyOf(shape, 0, 0), arm = body.arms[1], { o, a, c, p } = arm.frame, B = BUILD.hand;
+  const local = (x, y, z) => [a, c, p].map((e) => (x - o[0]) * e[0] + (y - o[1]) * e[1] + (z - o[2]) * e[2]);
+  const world = ([d, u, h]) => [0, 1, 2].map((k) => o[k] + a[k] * d + c[k] * u + p[k] * h);
+  // A chain's nodes [d, u, h, r], and the point at arc length s along it.
+  const nodes = (segs) => {
+    const q = [], k = segs.length - STRIDE;
+    for (let j = 0; j < segs.length; j += STRIDE) q.push([...local(segs[j], segs[j + 1], segs[j + 2]), segs[j + 3]]);
+    return [...q, [...local(segs[k] + segs[k + 4], segs[k + 1] + segs[k + 5], segs[k + 2] + segs[k + 6]), segs[k + 3] + segs[k + 7]]];
+  };
+  const span = (t, k) => Math.hypot(t[k + 1][0] - t[k][0], t[k + 1][1] - t[k][1], t[k + 1][2] - t[k][2]);
+  const along = (t, s) => {
+    let k = 0;
+    while (k < t.length - 2 && s > span(t, k)) s -= span(t, k++);
+    return t[k].map((v, i) => v + (t[k + 1][i] - v) * Math.min(s / span(t, k), 1));
+  };
+  const chains = arm.digits.map(nodes), lengthOf = (t) => t.slice(1).reduce((n, _, k) => n + span(t, k), 0);
+  // Each digit from where it leaves the palm's capsules to the end of its tip, and the turn of its last bone off d.
+  const digits = chains.map((t) => {
+    let s = 0;
+    while (s < lengthOf(t) && nearest(arm.palm, ...world(along(t, s)), hit).d < 0) s += 0.0002;
+    const [q, e] = t.slice(-2), curl = Math.acos((e[0] - q[0]) / Math.hypot(e[0] - q[0], e[1] - q[1], e[2] - q[2])) * 180 / Math.PI;
+    return { from: along(t, s)[0], free: lengthOf(t) - s + e[3], curl };
+  });
+  const L = digits[2].from + digits[2].free, stature = crowns[id], [, index, middle, ring, little] = digits.map((g) => g.free);
+  let lo = Infinity, hi = -Infinity;
+  const reach = (q, r) => { lo = Math.min(lo, q[1] - r); hi = Math.max(hi, q[1] + r); };
+  for (let k = 0; k < arm.palm.length; k += STRIDE) for (const s of [0, 1]) reach(local(...[0, 1, 2].map((i) => arm.palm[k + i] + s * arm.palm[k + 4 + i])), arm.palm[k + 3] + s * arm.palm[k + 7]);
+  for (const t of chains.slice(1)) reach(t[0], t[0][3]);
+  const breadth = hi - lo, thumbTip = chains[0].at(-1)[0] + chains[0].at(-1)[3] - along(chains[1], span(chains[1], 0) / 2)[0];
+  handSize[id] = { L, breadth };
+
+  // The drawn skin cut by the plane d = d0: its closed loops, each with its centre [u, h], in decreasing u.
+  const [left, right] = body.arms.map((m) => armSkins(m)[1]), { pos, index: tris } = right;
+  const section = (d0) => {
+    const n = pos.length / 3, side = Float64Array.from({ length: n }, (_, v) => local(pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2])[0] - d0);
+    const parent = new Map(), centre = new Map(), root = (k) => { while (parent.get(k) !== k) k = parent.get(k); return k; };
+    for (let t = 0; t < tris.length; t += 3) {
+      const cut = [];
+      for (let e = 0; e < 3; e++) {
+        const i = tris[t + e], j = tris[t + (e + 1) % 3];
+        if ((side[i] < 0) === (side[j] < 0)) continue;
+        const k = Math.min(i, j) * n + Math.max(i, j), f = side[i] / (side[i] - side[j]);
+        if (!parent.has(k)) { parent.set(k, k); centre.set(k, local(...[0, 1, 2].map((q) => pos[i * 3 + q] + (pos[j * 3 + q] - pos[i * 3 + q]) * f))); }
+        cut.push(k);
+      }
+      if (cut.length === 2) parent.set(root(cut[0]), root(cut[1]));
+    }
+    const loops = new Map();
+    for (const [k, q] of centre) { const r = root(k), s = loops.get(r) ?? [0, 0, 0]; loops.set(r, [s[0] + 1, s[1] + q[1], s[2] + q[2]]); }
+    return [...loops.values()].map(([m, u, h]) => [u / m, h / m]).sort((x, y) => y[0] - x[0]);
+  };
+  // Where each chain crosses d = d0, in u and h.
+  const cross = (t, d0) => { let s = 0; while (s < lengthOf(t) && along(t, s)[0] < d0) s += 0.0002; return along(t, s).slice(1, 3); };
+  const last = arm.palm.length - STRIDE, webs = local(arm.palm[last], arm.palm[last + 1], arm.palm[last + 2])[0] + B.web.from + B.web.reach;
+  const fingers = section(webs + 0.003), knuckle = chains[0].at(-2)[0], thumb = section(knuckle);
+  const placed = fingers.length === 4 && fingers.every(([u], k) => Math.abs(u - cross(chains[k + 1], webs + 0.003)[0]) < 0.003);
+  const [tu, th] = cross(chains[0], knuckle), offPalm = thumb.length === 2 && Math.hypot(thumb[0][0] - tu, thumb[0][1] - th) < 0.003 ? thumb[0][1] - thumb[1][1] : -Infinity;
+
+  // Gaps: on the line from a digit's axis to its neighbour's capsules, the point midway across the space between the
+  // capsules is outside the skin, by about half the skin's gap. The fingers past their webs (BUILD.hand.web), the
+  // thumb's last bone against the index finger and the palm.
+  const depth = meshDepth(pos, tris);
+  const gap = (t, from, others) => {
+    let g = Infinity;
+    for (let s = 0; s <= lengthOf(t); s += 0.001) {
+      const q = along(t, s);
+      if (q[0] < from) continue;
+      const w = world(q), k = (q[3] + nearest(others, ...w, hit).d) / 2, z = depth(w[0] - hit.nx * k, w[1] - hit.ny * k, w[2] - hit.nz * k);
+      g = Math.min(g, z ?? Infinity);
+    }
+    return g;
+  };
+  const gaps = [...[1, 2, 3].map((k) => gap(chains[k], webs, arm.digits[k + 1])), gap(chains[0].slice(-2), -Infinity, arm.digits[1]), gap(chains[0].slice(-2), -Infinity, arm.palm)];
+
+  // The skin against its arm's fine and coarse capsules, at vertices and triangle centres: [furthest out, furthest in].
+  const off = [arm.segs, arm.segsCoarse].map((segs) => {
+    let out = -Infinity, ins = Infinity;
+    for (let t = 0; t < tris.length; t += 3) for (const w of [[1, 0, 0], [1 / 3, 1 / 3, 1 / 3]]) {
+      const d = nearest(segs, ...[0, 1, 2].map((k) => w[0] * pos[tris[t] * 3 + k] + w[1] * pos[tris[t + 1] * 3 + k] + w[2] * pos[tris[t + 2] * 3 + k]), hit).d;
+      out = Math.max(out, d); ins = Math.min(ins, d);
+    }
+    return [out, ins];
+  });
+  const flipped = inward(right.pos, right.index, arm.segs) + inward(left.pos, left.index, body.arms[0].segs);
+  // One open end, inside the forearm's capsules and so under the arm's skin; no edge shared by three triangles.
+  const uses = new Map();
+  for (let t = 0; t < tris.length; t += 3) for (let e = 0; e < 3; e++) { const i = tris[t + e], j = tris[t + (e + 1) % 3], k = Math.min(i, j) * pos.length + Math.max(i, j); uses.set(k, (uses.get(k) ?? 0) + 1); }
+  let open = -Infinity, over = 0;
+  for (const [k, n] of uses) {
+    if (n > 2) over++;
+    if (n === 1) { const v = Math.floor(k / pos.length) * 3; open = Math.max(open, nearest(arm.forearm, pos[v], pos[v + 1], pos[v + 2], hit).d); }
+  }
+  let mirror = 0;
+  for (let v = 0; v < pos.length; v += 3) mirror = Math.max(mirror, Math.abs(left.pos[v] + pos[v]), Math.abs(left.pos[v + 1] - pos[v + 1]), Math.abs(left.pos[v + 2] - pos[v + 2]));
+
+  console.log(`\n${id} hand: length ${mm(L)} mm, ${(L / stature * 100).toFixed(2)}% of stature; palm ${(breadth / L * 100).toFixed(1)}% of the length broad; digits out of the palm, thumb to little finger, ${digits.map((g) => mm(g.free)).join(' / ')} mm, the middle ${(middle / L * 100).toFixed(1)}% of the length; thumb's tip ${mm(thumbTip)} mm past the middle of the index's first bone`);
+  console.log(`${id} digits: last bones turned ${digits.map((g) => g.curl.toFixed(0)).join(' / ')} degrees off the forearm's line; across the fingers past the webs ${fingers.length} loops at u ${fingers.map(([u]) => mm(u)).join(' / ')} mm; at the thumb's last joint ${thumb.length}, the thumb ${mm(offPalm)} mm to the palm's side of the palm`);
+  console.log(`${id} hand skin: ${pos.length / 3} vertices, ${mm(off[0][0])} mm outside its capsules at most and ${mm(-off[0][1])} inside, ${mm(off[1][0])} and ${mm(-off[1][1])} over the coarse ones; ${flipped} inward triangles; open end ${mm(-open)} mm inside the forearm, ${over} edges shared by three; half-gaps index-middle, middle-ring, ring-little, thumb-index, thumb-palm ${gaps.map(mm).join(' / ')} mm; left and right ${mm(mirror)} mm from mirror images`);
+  assert.ok(L / stature > 0.105 && L / stature < 0.11, `${id}: hand length ${(L / stature * 100).toFixed(2)}% of stature, outside 10.5 to 11%`);
+  assert.ok(breadth / L > 0.44 && breadth / L < 0.47, `${id}: palm breadth ${(breadth / L * 100).toFixed(1)}% of the hand's length, outside 44 to 47%`);
+  assert.ok(middle / L > 0.43 && middle / L < 0.45 && middle > ring && ring > index && index > little, `${id}: finger lengths ${[index, middle, ring, little].map(mm).join(' / ')} mm out of order or proportion`);
+  assert.ok(Math.abs(thumbTip) < 0.005, `${id}: the thumb's tip ends ${mm(thumbTip)} mm from the middle of the index's first bone`);
+  assert.ok(digits.slice(1).every((g, k) => g.curl < 90 && (k === 0 || g.curl > digits[k].curl)), `${id}: the fingers do not curl more toward the little finger`);
+  assert.ok(placed && offPalm > 0.015, `${id}: the skin does not part into four fingers in order and a thumb off the palm's side`);
+  assert.ok(gaps.every((g) => g > 0), `${id}: the skin bridges a gap between digits`);
+  assert.ok(off.every(([out, ins]) => out < 0.002 && ins > -0.0005) && flipped === 0 && open < 0 && over === 0, `${id}: hand skin strays from its capsules, faces inward or shows an edge`);
+  assert.ok(mirror < 1e-6, `${id}: hands are not mirror images`);
+}
+assert.ok(handSize.masculine.L > handSize.feminine.L && handSize.masculine.breadth > handSize.feminine.breadth, 'the masculine hand is not the larger');
+
+// The hands through two cycles of a walk and of a jump, each blended in from standing: clear of the thighs, pelvis and
+// glutes by 10 mm, as the arms at rest, and outside the skirt's rest shape carried by the root. A share of the points
+// past the wrist finds each motion's worst frames, every 16th against the skirt and every 64th against the hips, which
+// stand off by 40 mm or more; at those frames every point is measured.
+for (const [id, shape] of Object.entries(BODIES)) for (const build of [0, 1]) {
+  const body = bodyOf(shape, build, build), rig = makeRig(body), M = buildMotions(rig), [hy, hz] = body.joints.hip;
+  const hands = body.arms.map((arm) => {
+    const { o, a } = arm.frame, { pos } = armSkins(arm)[1], q = [];
+    for (let i = 0; i < pos.length; i += 3) if ((pos[i] - o[0]) * a[0] + (pos[i + 1] - o[1]) * a[1] + (pos[i + 2] - o[2]) * a[2] > 0) q.push(pos[i], pos[i + 1], pos[i + 2]);
+    return track(rig, new Float32Array(q), arm);
+  });
+  const nl = body.legs[0].segs.length + body.legs[1].segs.length, nh = (shape.pelvis.length + shape.glutes.length) * STRIDE, thighs = [];
+  for (let o = 0; o < nl; o += STRIDE) if (body.segs[o + 1] > body.joints.knee[0]) thighs.push(o);
+  const { pos: sk, rings, segs } = buildSkirt(body), cz = body.trunk.cz, y0 = sk[1], y1 = sk[(rings - 1) * segs * 3 + 1];
+  const radius = (i, j) => { const o = (i * segs + (j % segs)) * 3; return Math.hypot(sk[o], sk[o + 2] - cz); };
+  // How far (x, y, z) in the skirt's rest frame stands inside its rest shape, by radius about the skirt's axis.
+  const inside = (x, y, z) => {
+    if (y > y0 || y < y1) return -Infinity;
+    const v = (y0 - y) / (y0 - y1) * (rings - 1), i = Math.min(Math.floor(v), rings - 2), f = v - i;
+    const th = (Math.atan2(z - cz, x) / (2 * Math.PI) * segs + segs) % segs, j = Math.floor(th), g = th - j;
+    return (1 - f) * ((1 - g) * radius(i, j) + g * radius(i, j + 1)) + f * ((1 - g) * radius(i + 1, j) + g * radius(i + 1, j + 1)) - Math.hypot(x, z - cz);
+  };
+  // Each measure on every n-th point; n = 0 skips it.
+  const measure = (pose, [skirt, hips]) => {
+    applyPose(rig, [], pose);
+    const s = body.live.segs, near = concatSegs(...thighs.map((o) => s.subarray(o, o + STRIDE)), s.subarray(nl, nl + nh)), cp = Math.cos(pose.root.pitch), sp = Math.sin(pose.root.pitch);
+    const m = { clear: Infinity, depth: -Infinity };
+    for (const q of hands) {
+      for (let i = 0; hips && i < q.length; i += 3 * hips) m.clear = Math.min(m.clear, nearest(near, q[i], q[i + 1], q[i + 2], hit).d);
+      for (let i = 0; skirt && i < q.length; i += 3 * skirt) {
+        // Back into the skirt's rest frame: undo the root's shift, then its pitch about the hip.
+        const ty = q[i + 1] - pose.root.y - hy, tz = q[i + 2] - pose.root.z - hz;
+        m.depth = Math.max(m.depth, inside(q[i], hy + ty * cp + tz * sp, hz - ty * sp + tz * cp));
+      }
+    }
+    return m;
+  };
+  const res = { stand: measure(STAND, [1, 1]) };
+  for (const motion of ['walk', 'jump']) {
+    const d = makeDriver(), worst = { clear: [Infinity], depth: [-Infinity] };
+    want(d, motion);
+    for (let f = 0; f < Math.round((MOTION_BLEND + 2 * M[motion].period) / DT); f++) {
+      const pose = drive(d, DT, rig, M), m = measure(pose, [16, 64]);
+      if (m.clear < worst.clear[0]) worst.clear = [m.clear, pose];
+      if (m.depth > worst.depth[0]) worst.depth = [m.depth, pose];
+    }
+    res[motion] = { clear: measure(worst.clear[1], [0, 1]).clear, depth: measure(worst.depth[1], [1, 0]).depth };
+  }
+  applyPose(rig, [], STAND);
+  const all = Object.values(res);
+  console.log(`${id} ${build} hands standing, walking, jumping: clear of the thighs, pelvis and glutes by ${all.map((m) => mm(m.clear)).join(' / ')} mm, ${all.map((m) => mm(-m.depth)).join(' / ')} mm outside the skirt's rest shape`);
+  assert.ok(all.every((m) => m.clear >= 0.01 && m.depth <= 0), `${id} ${build}: a hand comes within 10 mm of the thighs or hips, or into the skirt`);
+}
 
 for (const [id, shape] of Object.entries(BODIES)) for (const [thigh, glute] of MODS) {
   console.log(`\n== ${id} thigh ${thigh} glute ${glute}`);
@@ -999,11 +1169,12 @@ for (const [id, shape] of Object.entries(BODIES)) for (const build of [0, 1]) {
   const body = bodyOf(shape, build, build), kept = garments.get(body);
   const rig = makeRig(body);
   // The mesh sizes main.js draws, so the cost below is the app's.
-  // The toes come last, so the indices above stay put.
+  // The toes come next, then the hands (16 and 17), so the indices above stay put.
   const toes = body.legs.flatMap((l, s) => toeSkins(l).map((g, k) => [g, l, `${s ? 'right' : 'left'} toe ${k + 1}`]));
-  const skins = [...body.legs.map((l) => legSkin(l)), buildTorso(body), ...body.arms.map(armSkin), buildHead(body), ...toes.map(([g]) => g)];
-  const owners = [...body.legs, BLEND, ...body.arms, ROOT, ...toes.map(([, l]) => l)];
-  const names = ['left leg', 'right leg', 'torso', 'left arm', 'right arm', 'head', ...toes.map(([, , n]) => n)];
+  const arms = body.arms.map(armSkins);
+  const skins = [...body.legs.map((l) => legSkin(l)), buildTorso(body), ...arms.map(([g]) => g), buildHead(body), ...toes.map(([g]) => g), ...arms.map(([, h]) => h)];
+  const owners = [...body.legs, BLEND, ...body.arms, ROOT, ...toes.map(([, l]) => l), ...body.arms];
+  const names = ['left leg', 'right leg', 'torso', 'left arm', 'right arm', 'head', ...toes.map(([, , n]) => n), 'left hand', 'right hand'];
   const live = skins.map((g, m) => track(rig, g.pos, owners[m]));
   const stockings = [makeStocking(body, body.legs[0]), kept.stocking], { skirt, tank: shirt } = kept;
   const cloths = [...stockings, skirt, shirt];
@@ -1105,7 +1276,7 @@ for (const [id, shape] of Object.entries(BODIES)) for (const build of [0, 1]) {
   // Arms swing like a stride. The arm skin rides its own capsules, and the left arm ignores the right arm's pose.
   applyPose(rig, cloths, makePose(radians(ARM_SWING)));
   let armOut = -Infinity, armAt = '';
-  for (const m of [3, 4]) {
+  for (const m of [3, 4, 16, 17]) {
     const p = live[m], r = skins[m].pos;
     for (let i = 0; i < p.length; i += 3) {
       const d = nearest(body.live.segs, p[i], p[i + 1], p[i + 2], hit).d;
@@ -1114,13 +1285,20 @@ for (const [id, shape] of Object.entries(BODIES)) for (const build of [0, 1]) {
   }
   console.log(`arms swung: skin furthest outside the posed union ${mm(armOut)} mm, ${armAt}`);
   assert.ok(armOut <= 0.002, `${id} ${build}: arm skin ${mm(armOut)} mm outside the posed union`);
-  const hand = (m) => skins[m].rings * skins[m].segs * 3 + 2; // z of the end pole, the mitten's tip
-  assert.ok(live[3][hand(3)] > skins[3].pos[hand(3)] + 0.1 && live[4][hand(4)] < skins[4].pos[hand(4)] - 0.1, `${id}: positive shoulder does not swing the arm forward`);
+  // z of the hand's vertex furthest along its forearm, the middle finger's tip.
+  const tip = (m) => {
+    const { o, a } = owners[m].frame, p = skins[m].pos;
+    let far = -Infinity, at = 0;
+    for (let i = 0; i < p.length; i += 3) { const d = (p[i] - o[0]) * a[0] + (p[i + 1] - o[1]) * a[1] + (p[i + 2] - o[2]) * a[2]; if (d > far) { far = d; at = i + 2; } }
+    return at;
+  };
+  const [tl, tr] = [tip(16), tip(17)];
+  assert.ok(live[16][tl] > skins[16].pos[tl] + 0.1 && live[17][tr] < skins[17].pos[tr] - 0.1, `${id}: positive shoulder does not swing the arm forward`);
   applyPose(rig, cloths, makePose(radians({ elbowR: 20 })));
-  assert.ok(live[4][hand(4)] > skins[4].pos[hand(4)] + 0.05, `${id}: positive elbow does not flex the forearm forward`);
+  assert.ok(live[17][tr] > skins[17].pos[tr] + 0.05, `${id}: positive elbow does not flex the forearm forward`);
   applyPose(rig, cloths, makePose(radians(RIGHT_ARM)));
-  const leftArm = maxDiff(live[3], skins[3].pos);
-  console.log(`right arm posed, left arm skin moved ${leftArm.toExponential(1)} m`);
+  const leftArm = Math.max(maxDiff(live[3], skins[3].pos), maxDiff(live[16], skins[16].pos));
+  console.log(`right arm posed, left arm and hand skin moved ${leftArm.toExponential(1)} m`);
   assert.ok(leftArm === 0 && maxDiff(live[0], skins[0].pos) === 0, `${id}: posing the right arm moved the left side`);
 
   // 7. Cost of one pose change: capsules, tracked skin, every cloth's home and pinned vertices.
@@ -1259,7 +1437,7 @@ for (const [id, shape] of Object.entries(BODIES)) for (const build of [0, 1]) {
   console.log(`\n== motion: ${tag}`);
   const body = buildBody(shape, { thigh: build, glute: build }, STOCKING_BAND);
   const rig = makeRig(body);
-  for (const [g, o] of [...body.legs.flatMap((l) => [legSkin(l), ...toeSkins(l)].map((g) => [g, l])), [buildTorso(body), BLEND], ...body.arms.map((a) => [armSkin(a), a]), [buildHead(body), ROOT]]) track(rig, g.pos, o);
+  for (const [g, o] of [...body.legs.flatMap((l) => [legSkin(l), ...toeSkins(l)].map((g) => [g, l])), [buildTorso(body), BLEND], ...body.arms.flatMap((a) => armSkins(a).map((g) => [g, a])), [buildHead(body), ROOT]]) track(rig, g.pos, o);
   const M = buildMotions(rig);
   const stockings = body.legs.map((l) => makeStocking(body, l)), skirt = makeSkirt(body), shirt = makeShirt(body, SHIRT_STYLES.find((s) => s.id === 'tank'));
   const cloths = [...stockings, skirt, shirt], tethered = [...stockings, shirt];

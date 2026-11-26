@@ -6,10 +6,10 @@
 
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { deflateSync } from 'node:zlib';
-import { buildBody, buildTorso, sweepLimb } from '../src/body.js';
+import { buildBody, buildTorso } from '../src/body.js';
 import { BODIES } from '../src/presets.js';
 import { gridIndex, computeNormals } from '../src/cloth.js';
-import { STOCKING_BAND } from '../src/garments.js';
+import { STOCKING_BAND, armSkins } from '../src/garments.js';
 import { makeRig, track, applyPose, stepSoft, BLEND } from '../src/pose.js';
 import { buildMotions, makeDriver, want, drive } from '../src/motion.js';
 
@@ -35,13 +35,15 @@ const norm = (v) => { const l = Math.hypot(...v); return v.map((c) => c / l); };
 const LIGHTS = [[norm([1.2, 2.4, 1.6]), 0.72], [norm([-2.2, 0.5, 1.4]), 0.22]];
 const AMBIENT = 0.14, SKIN = [214, 162, 128];
 
-const grids = (body) => [buildTorso(body), ...body.arms.map((arm) => sweepLimb(arm, 0, arm.length, 150, 40, 0, 6, 6))];
-export const shaded = ({ pos, rings, segs, startPole = false }) => {
-  const index = gridIndex(rings, segs, true, true, startPole), normal = new Float32Array(pos.length);
+// Each mesh with what moves it.
+const grids = (body) => [[buildTorso(body), BLEND], ...body.arms.flatMap((arm) => armSkins(arm).map((g) => [g, arm]))];
+export const shaded = ({ pos, index, rings, segs, startPole = false }) => {
+  index ??= gridIndex(rings, segs, true, true, startPole);
+  const normal = new Float32Array(pos.length);
   computeNormals(pos, index, normal);
   return { pos, index, normal };
 };
-const meshes = (size) => grids(buildBody(BODIES.feminine, { thigh: 0, glute: 0, chest: size }, STOCKING_BAND)).map(shaded);
+const meshes = (size) => grids(buildBody(BODIES.feminine, { thigh: 0, glute: 0, chest: size }, STOCKING_BAND)).map(([g]) => shaded(g));
 
 // A view from `deg` about y, 0 from the front (+z): right, up and toward-the-camera axes, and what it frames.
 export const yaw = (deg, centre = CENTRE, half = HALF) => {
@@ -116,8 +118,8 @@ function filmstrip(outDir, sizes, wire, name, plan) {
   mkdirSync(outDir, { recursive: true });
   for (const size of sizes) {
     const body = buildBody(BODIES.feminine, { thigh: 0, glute: 0, chest: size }, STOCKING_BAND), rig = makeRig(body);
-    const gs = grids(body), owners = [BLEND, ...body.arms], live = gs.map((g, k) => track(rig, g.pos, owners[k]));
-    const list = gs.map((g, k) => shaded({ ...g, pos: live[k] })), M = buildMotions(rig), d = makeDriver(), pick = plan(M, d);
+    const gs = grids(body), live = gs.map(([g, by]) => track(rig, g.pos, by));
+    const list = gs.map(([g], k) => shaded({ ...g, pos: live[k] })), M = buildMotions(rig), d = makeDriver(), pick = plan(M, d);
     // The crest without the bounce, carried by the root, so the view follows the chest and the guide marks the crest.
     const [hy, hz] = body.joints.hip, [cy, cz] = body.bust.at, offset = [CENTRE[1] - cy, CENTRE[2] - cz];
     const crest = (p) => {
