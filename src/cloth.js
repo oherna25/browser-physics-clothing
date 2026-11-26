@@ -249,7 +249,7 @@ function refreshFree(c) {
     candStart[i] = k;
     if (w[i] === 0) continue;
     const x = pos[o], y = pos[o + 1], z = pos[o + 2];
-    for (let s = 0; s < segs.length; s += STRIDE) if (segDistance(segs, s, x, y, z, tmp) < reach) cand[k++] = s;
+    for (let s = 0; s < segs.length; s += STRIDE) if (segDistance(segs, s, x, y, z, tmp, reach) < reach) cand[k++] = s;
   }
   candStart[c.n] = k;
 }
