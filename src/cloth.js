@@ -1,6 +1,8 @@
 // Position-based cloth solver. Pure typed-array code, no rendering imports,
 // so it runs unchanged in the browser and in Node (see test/sim.test.mjs).
 
+import { LIST_MARGIN } from './presets.js';
+
 export const STRUCT = 0;
 export const SHEAR = 1;
 export const BEND = 2;
@@ -210,7 +212,6 @@ const FREE_REACH = 0.04;
 // to a capsule changes by at most `lip` of a move. So each vertex keeps the capsules within that reach, in order, and the
 // substeps measure only those; a vertex that has left its margin uses the whole list as before. The collision sees the
 // same capsules either way: this changes how many it measures, not which one wins (0.9 ms a frame saved, measured).
-const LIST_MARGIN = 0.004;
 const usesLists = (c) => c.cand !== null && (!c.free || c.freeOn);
 const NO_SHORT = { start: null, cand: null, ok: null, base: null };
 const makeShort = (c) => ({ start: new Uint32Array(c.n + 1), cand: new Uint32Array(c.cand.length), ok: new Uint8Array(c.n), base: new Float32Array(c.n * 3) });
@@ -533,8 +534,8 @@ export function stepCloths(a, b, dt) {
 
 export function wake(c) { c.asleep = false; c.stillFrames = 0; }
 
-// Math.hypot(x, y, z) with V8's algorithm, so the same bits: the builtin's call and argument array cost 0.9 ms a frame
-// across the skin's normals.
+// Math.hypot(x, y, z) with V8's algorithm, so the same bits: the builtin's call and argument array cost 0.6 ms a frame
+// on the skin's normals alone (measured).
 function hypot3(x, y, z) {
   const ax = Math.abs(x), ay = Math.abs(y), az = Math.abs(z);
   const max = ax > ay ? (ax > az ? ax : az) : (ay > az ? ay : az);

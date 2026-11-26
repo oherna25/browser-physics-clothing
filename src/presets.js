@@ -392,6 +392,10 @@ export const STOCKING_MOTION = { inertia: 0.03, drag: 0 };
 export const SKIRT_MOTION = { inertia: 1, drag: 2.5 };
 export const SHIRT_MOTION = { inertia: 0.4, drag: 1 };
 
+// How far from where a vertex starts a frame, in metres, the collision's per-frame candidate lists stay complete (cloth.js
+// refreshShort). It changes how many capsules a vertex measures, never which one wins; 3 to 4 mm measured fastest.
+export const LIST_MARGIN = 0.004;
+
 // offset + thickness must stay under the skirt's thickness (0.005) so a tucked tank sits beneath it.
 export const SHIRT = {
   offset: 0.0025, thickness: 0.0015, pitch: 0.012, nseg: 64,
