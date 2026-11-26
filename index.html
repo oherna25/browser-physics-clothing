@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>Elastic Cloth & Stocking Simulator</title>
+  <style>
+    :root { color-scheme: light; --ink: #23211f; --muted: #6d6862; --line: rgba(35, 33, 31, 0.14); }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #d8d5cf; }
+    body { font: 13px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--ink); }
+    canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+    #panel {
+      position: fixed; top: 16px; left: 16px; width: 232px; padding: 14px 16px 12px;
+      background: rgba(250, 248, 245, 0.82); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+      border: 1px solid var(--line); border-radius: 12px;
+      max-height: calc(100vh - 32px); overflow-y: auto;
+    }
+    h1 { margin: 0 0 2px; font-size: 14px; font-weight: 600; letter-spacing: -0.01em; }
+    p { margin: 0 0 12px; color: var(--muted); font-size: 12px; }
+    label.row { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; margin-bottom: 9px; }
+    label.row[hidden] { display: none; }
+    label.row span:last-of-type { color: var(--muted); font-variant-numeric: tabular-nums; }
+    label.row input { grid-column: 1 / -1; width: 100%; margin: 0; accent-color: var(--ink); }
+    .checks { display: flex; gap: 14px; margin: 4px 0 12px; }
+    .checks label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+    .checks input { margin: 0; accent-color: var(--ink); }
+    .foot { display: flex; align-items: center; justify-content: space-between; padding-top: 10px; border-top: 1px solid var(--line); }
+    button {
+      font: inherit; color: var(--ink); padding: 5px 12px; border-radius: 7px; cursor: pointer;
+      background: transparent; border: 1px solid var(--line);
+    }
+    button:hover { background: rgba(35, 33, 31, 0.06); }
+    button:focus-visible, input:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+    .opt { margin-bottom: 10px; }
+    .opt-head { display: flex; justify-content: space-between; margin-bottom: 4px; }
+    .opt-head span:last-child { color: var(--muted); }
+    .seg { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+    .seg button:last-child:nth-child(odd) { grid-column: 1 / -1; }
+    .seg button[aria-pressed="true"] { background: var(--ink); color: #faf8f5; border-color: var(--ink); }
+    .swatches { display: flex; gap: 8px; flex-wrap: wrap; }
+    .swatch { width: 22px; height: 22px; padding: 0; border-radius: 50%; border: 1px solid rgba(35, 33, 31, 0.28); }
+    .swatch[aria-pressed="true"] { box-shadow: 0 0 0 2px #faf8f5, 0 0 0 3.5px var(--ink); }
+    #stats { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+    @media (max-width: 520px) { #panel { width: auto; right: 16px; } }
+  </style>
+</head>
+<body>
+  <canvas id="view"></canvas>
+  <div id="panel">
+    <h1>Cloth & Stocking Simulator</h1>
+    <p>Drag the fabric to pull it. Drag the background to orbit, scroll to zoom.</p>
+    <div id="options"></div>
+    <div id="build">
+      <label class="row"><span>Thigh</span><span id="thighVal"></span>
+        <input id="thigh" type="range" min="0" max="100" value="0" /></label>
+      <label class="row"><span>Glutes</span><span id="gluteVal"></span>
+        <input id="glute" type="range" min="0" max="100" value="0" /></label>
+      <label class="row"><span>Chest</span><span id="chestVal"></span>
+        <input id="chest" type="range" min="0" max="100" value="50" /></label>
+    </div>
+    <label class="row"><span>Stretch</span><span id="stretchVal"></span>
+      <input id="stretch" type="range" min="0" max="100" value="50" /></label>
+    <label class="row"><span>Snap-back</span><span id="snapVal"></span>
+      <input id="snap" type="range" min="15" max="80" value="45" /></label>
+    <label class="row"><span>Grab radius</span><span id="radiusVal"></span>
+      <input id="radius" type="range" min="15" max="80" value="35" /></label>
+    <label class="row"><span>Sheerness</span><span id="sheerVal"></span>
+      <input id="sheer" type="range" min="0" max="100" value="50" /></label>
+    <div class="checks">
+      <label><input id="wire" type="checkbox" /> Wireframe</label>
+      <label><input id="skirt" type="checkbox" checked /> Skirt</label>
+    </div>
+    <div class="foot"><button id="reset">Reset</button><span id="stats"></span></div>
+  </div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
