@@ -35,7 +35,9 @@ export function concatSegs(...arrays) {
 // Signed distance from a point to one capsule; writes the outward normal to `out`.
 // An open capsule ends in a flat cap instead of a sphere: past its overlap the point is
 // outside by the axial excess, so the pieces beside it can carve a steep groove.
-function segDistance(segs, o, x, y, z, out) {
+// A caller that only acts on a distance below `cut` passes it, and a closed capsule that far or further away
+// returns Infinity without its root, quotient and normal.
+function segDistance(segs, o, x, y, z, out, cut = Infinity) {
   const px = x - segs[o], py = y - segs[o + 1], pz = z - segs[o + 2];
   const dx = segs[o + 4], dy = segs[o + 5], dz = segs[o + 6];
   const raw = (px * dx + py * dy + pz * dz) * segs[o + 8];
@@ -44,10 +46,14 @@ function segDistance(segs, o, x, y, z, out) {
   // cost of every closed capsule (measured, 2.4 to 4.9 ms per skirt step).
   if (t !== raw && segs[o + 9] !== 0) return openEnd(segs, o, px, py, pz, raw, out);
   const cx = px - dx * t, cy = py - dy * t, cz = pz - dz * t;
-  const len = Math.sqrt(cx * cx + cy * cy + cz * cz);
+  const l2 = cx * cx + cy * cy + cz * cz, r = segs[o + 3] + segs[o + 7] * t, lim = r + cut;
+  // The margin keeps the squared test from disagreeing with len - r at the boundary, so a capsule nearer than `cut`
+  // is measured exactly as without it.
+  if (l2 > lim * lim * (1 + 1e-9)) return Infinity;
+  const len = Math.sqrt(l2);
   const inv = len > 1e-9 ? 1 / len : 0;
   out.nx = cx * inv; out.ny = cy * inv; out.nz = cz * inv;
-  return len - (segs[o + 3] + segs[o + 7] * t);
+  return len - r;
 }
 
 // Beyond its overlap an open piece ends in a flat cap, not a sphere, so a
@@ -300,31 +306,33 @@ function substep(c, h, air) {
   const segs = c.wideFrames > 0 && c.colliderFull ? c.colliderFull : c.collider;
   if (!segs) return;
   const th = P.thickness, keep = 1 - P.friction;
-  const lists = c.cand !== null && (!c.free || c.freeOn), at = c.candAt;
+  // Cloths carry different fields, so `c` has several shapes here and a field read through it inside the loops
+  // below costs a polymorphic load per capsule (measured: 4 ms a frame across a stocking pair, skirt and shirt).
+  const lists = c.cand !== null && (!c.free || c.freeOn), at = c.candAt, { cand, candStart, candR2, collider } = c;
   for (let i = 0, o = 0; i < n; i++, o += 3) {
     if (w[i] === 0) continue;
     const x = pos[o], y = pos[o + 1], z = pos[o + 2];
-    let best = Infinity, bx = 0, by = 0, bz = 0;
+    // Only a capsule closer than th pushes, so none further is measured exactly.
+    let best = th, bx = 0, by = 0, bz = 0;
     let local = false;
     if (lists) {
       const ex = x - at[o], ey = y - at[o + 1], ez = z - at[o + 2];
-      local = ex * ex + ey * ey + ez * ez < c.candR2;
+      local = ex * ex + ey * ey + ez * ez < candR2;
     }
     if (local) {
-      for (let q = c.candStart[i], e = c.candStart[i + 1]; q < e; q++) {
-        const d = segDistance(c.collider, c.cand[q], x, y, z, tmp); // candidates index the resting collider
+      for (let q = candStart[i], e = candStart[i + 1]; q < e; q++) {
+        const d = segDistance(collider, cand[q], x, y, z, tmp, best); // candidates index the resting collider
         if (d < best) { best = d; bx = tmp.nx; by = tmp.ny; bz = tmp.nz; }
       }
     } else {
       if (lists) c.fallbacks++;
-      // Only a capsule closer than th pushes, so one whose height range, grown by its radius and the open pieces'
-      // overlap, stays further than that from y is skipped without measuring it.
-      best = th;
+      // A capsule whose height range, grown by its radius and the open pieces' overlap, stays further than best
+      // from y is skipped without measuring it.
       for (let s = 0; s < segs.length; s += STRIDE) {
         const ay = segs[s + 1], dy = segs[s + 5], r0 = segs[s + 3], dr = segs[s + 7];
         const room = (dr > 0 ? r0 + dr : r0) + best + (dy < 0 ? -0.25 * dy : 0.25 * dy);
         if (y > (dy > 0 ? ay + dy : ay) + room || y < (dy < 0 ? ay + dy : ay) - room) continue;
-        const d = segDistance(segs, s, x, y, z, tmp);
+        const d = segDistance(segs, s, x, y, z, tmp, best);
         if (d < best) { best = d; bx = tmp.nx; by = tmp.ny; bz = tmp.nz; }
       }
     }
