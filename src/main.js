@@ -833,6 +833,31 @@ window.__sim = {
   get cloths() { return fig.cloths; },
   camera, controls, renderer, scene, apply, settings,
   step(frames = 1) { for (let f = 0; f < frames; f++) advance(1 / 60); controls.update(); renderer.render(scene, camera); },
+  // Times whole frames in one synchronous call, so a throttled tab still measures correctly. A 1-pixel readback
+  // after each render makes the GPU finish inside the timed region. The two hashes prove a change kept the output.
+  bench(frames = 240, warm = 60) {
+    const gl = renderer.getContext(), px = new Uint8Array(4), sim = [], draw = [];
+    const hash = (bytes, h = 2166136261) => { for (let i = 0; i < bytes.length; i++) h = Math.imul(h ^ bytes[i], 16777619); return h >>> 0; };
+    for (let f = 0; f < warm + frames; f++) {
+      const t0 = performance.now();
+      advance(1 / 60);
+      const t1 = performance.now();
+      controls.update(); renderer.render(scene, camera);
+      gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      const t2 = performance.now();
+      if (f >= warm) { sim.push(t1 - t0); draw.push(t2 - t1); }
+    }
+    const stat = (a) => { const s = [...a].sort((x, y) => x - y), at = (q) => +s[Math.floor(q * (s.length - 1))].toFixed(2); return { p10: at(0.1), median: at(0.5), p90: at(0.9) }; };
+    const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight, image = new Uint8Array(w * h * 4);
+    renderer.render(scene, camera);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, image);
+    let state = 2166136261;
+    for (const c of fig.cloths) state = hash(new Uint8Array(c.pos.buffer, c.pos.byteOffset, c.pos.byteLength), state);
+    return {
+      frames, sim: stat(sim), draw: stat(draw), total: stat(sim.map((s, i) => s + draw[i])),
+      state, pixels: hash(image), size: [w, h], calls: renderer.info.render.calls, triangles: renderer.info.render.triangles,
+    };
+  },
   grabAt(clothIndex, vertex) {
     const c = fig.cloths[clothIndex];
     stopGrab();

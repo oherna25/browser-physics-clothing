@@ -105,6 +105,7 @@ Read this section before you change code.
 | `settings` | The current option values. |
 | `camera`, `controls` | The three.js camera and the orbit controls. |
 | `renderer`, `scene` | The three.js renderer and scene. |
+| `bench(frames, warm)` | Times whole frames in one call and returns the `sim`, `draw`, and `total` milliseconds per frame, with a hash of the cloth state and a hash of the final image. Set the body and the motion with `apply` first, because `apply('body', ...)` rebuilds the figure and makes the run repeatable. |
 | `grabAt(clothIndex, vertex)`, `dragTo(x, y, z)`, `release()` | Pull a cloth vertex from a script. |
 
 The sliders rebuild the body on the `change` event, not on `input`. To set one from a script, set its `value` and dispatch both events.
