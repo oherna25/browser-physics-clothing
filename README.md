@@ -4,6 +4,12 @@ A cloth simulator that runs in the browser. A mannequin wears stockings, a pleat
 
 Everything runs on the CPU in plain JavaScript. three.js draws the result.
 
+![The feminine mannequin standing in a white tank top, a charcoal plaid skirt, and black stockings, beside the control panel](docs/stand.jpg)
+
+| Jump | Walk |
+|---|---|
+| ![The mannequin in mid-jump with a striped crop top, a red tartan skirt, and striped stockings](docs/jump.jpg) | ![The masculine mannequin walking in an ombre turtleneck, a navy skirt, and navy stockings](docs/walk.jpg) |
+
 ## Run it
 
 You need Node.js 20 or later.
