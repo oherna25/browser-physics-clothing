@@ -100,6 +100,7 @@ Read this section before you change code.
 | `motion` | A copy of the motion state: `state`, `id`, `t`, and `amp`. |
 | `settings` | The current option values. |
 | `camera`, `controls` | The three.js camera and the orbit controls. |
+| `renderer`, `scene` | The three.js renderer and scene. |
 | `grabAt(clothIndex, vertex)`, `dragTo(x, y, z)`, `release()` | Pull a cloth vertex from a script. |
 
 The sliders rebuild the body on the `change` event, not on `input`. To set one from a script, set its `value` and dispatch both events.

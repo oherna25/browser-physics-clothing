@@ -1,9 +1,8 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { buildBody, buildTorso, buildHead, buildChokerRest, neckPoint, sweepLimb } from './body.js';
 import { makeStocking, makeSkirt, makeShirt, legSkin, STOCKING_BAND } from './garments.js';
-import { stepCloth, beginGrab, endGrab, resetCloth, computeStretch, computeNormals, gridIndex } from './cloth.js';
+import { stepCloth, beginGrab, endGrab, resetCloth, computeStretch, computeNormals, gridIndex, STRIDE } from './cloth.js';
 import { buildMotions, makeDriver, want, restart, drive, followView } from './motion.js';
 import { makeRig, track, follow, poseSet, angleOf, applyPose, stepSoft, makePose, blendPose, STAND, ROOT, BLEND } from './pose.js';
 import { nylonMaterial, setNylonColour } from './nylon.js';
@@ -15,12 +14,64 @@ const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-renderer.toneMapping = THREE.NeutralToneMapping; // keeps skin hue where ACES shifts it
-renderer.toneMappingExposure = 1.0;
+renderer.toneMapping = THREE.NeutralToneMapping; // keeps skin hue where ACES shifts it and AgX greys it
+renderer.toneMappingExposure = VIEW.exposure;
+
+// String.replace fails silently, so every shader patch goes through this.
+function patch(src, anchor, text) {
+  if (!src.includes(anchor)) throw new Error(`shader anchor not found: ${anchor}`);
+  return src.replace(anchor, text);
+}
+
+// Contact-hardening key shadow (PCSS): the penumbra widens with the distance from blocker to receiver, as under a
+// softbox. It replaces the PCF-soft branch, the type the renderer uses, for every material, so it must be patched
+// before anything compiles. Taps compare against the receiver's plane (dzduv) plus a small cone, so a tilted or
+// curved surface does not shadow itself, and the filter disk turns per pixel so its taps dither instead of banding.
+{
+  const { left, right, top, bottom, near, far } = VIEW.shadow, { softness, maxBlur } = VIEW.key;
+  const span = [right - left, top - bottom].map((w) => (1 / w).toFixed(5)).join(', ');
+  const pcss = /* glsl */ `
+    float shadowFacing = 1.0; // N.L of the light being shadowed, plus the skin's wrap reach; below 0 it lights nothing
+    vec2 pcssDisk( int i, float n, float spin ) {
+      float a = float( i ) * 2.39996 + spin;
+      return sqrt( ( float( i ) + 0.5 ) / n ) * vec2( cos( a ), sin( a ) );
+    }
+    float pcssShadow( sampler2D map, vec2 texel, vec3 c, vec2 dzduv ) {
+      float spin = 6.2832 * fract( 52.9829189 * fract( dot( gl_FragCoord.xy, vec2( 0.06711056, 0.00583715 ) ) ) );
+      vec2 search = ${maxBlur.toFixed(4)} * vec2( ${span} );
+      float sum = 0.0, count = 0.0;
+      // The search starts at the centre and crowds near it, so a blocker in contact is never stepped over.
+      for ( int i = 0; i < 11; i ++ ) {
+        vec2 o = i == 0 ? vec2( 0.0 ) : pcssDisk( i - 1, 10.0, 0.0 ) * sqrt( ( float( i ) - 0.5 ) / 10.0 ) * search;
+        float z = unpackRGBAToDepth( texture2D( map, c.xy + o ) );
+        if ( z < c.z + dot( dzduv, o ) - 0.12 * length( o ) ) { sum += z; count += 1.0; }
+      }
+      if ( count == 0.0 ) return 1.0;
+      vec2 radius = clamp( ( c.z - sum / count ) * ${((far - near) * softness).toFixed(5)} * vec2( ${span} ), 1.5 * texel, search );
+      float lit = 0.0;
+      for ( int i = 0; i < 24; i ++ ) {
+        vec2 o = pcssDisk( i, 24.0, spin ) * radius;
+        lit += step( c.z + dot( dzduv, o ) - 0.12 * length( o ), unpackRGBAToDepth( texture2D( map, c.xy + o ) ) );
+      }
+      return lit / 24.0;
+    }
+    float getShadow( sampler2D shadowMap`;
+  let chunk = THREE.ShaderChunk.shadowmap_pars_fragment;
+  chunk = patch(chunk, 'float getShadow( sampler2D shadowMap', pcss);
+  chunk = patch(chunk, 'bool frustumTest = inFrustum && shadowCoord.z <= 1.0;', `bool frustumTest = inFrustum && shadowCoord.z <= 1.0;
+    vec3 sdx = dFdx( shadowCoord.xyz ), sdy = dFdy( shadowCoord.xyz );
+    float sdet = sdx.x * sdy.y - sdx.y * sdy.x;
+    vec2 dzduv = abs( sdet ) > 1e-12 ? clamp( vec2( sdy.y * sdx.z - sdx.y * sdy.z, sdx.x * sdy.z - sdy.x * sdx.z ) / sdet, - 4.0, 4.0 ) : vec2( 0.0 );`);
+  chunk = patch(chunk, '#if defined( SHADOWMAP_TYPE_PCF )\n', `#if defined( SHADOWMAP_TYPE_PCF_SOFT )
+      shadow = shadowFacing < 0.0 ? 1.0 : pcssShadow( shadowMap, vec2( 1.0 ) / shadowMapSize, shadowCoord.xyz, dzduv );
+    #elif defined( SHADOWMAP_TYPE_PCF )\n`);
+  THREE.ShaderChunk.shadowmap_pars_fragment = chunk;
+  THREE.ShaderChunk.lights_fragment_begin = patch(THREE.ShaderChunk.lights_fragment_begin, 'directionalLightShadow = directionalLightShadows[ i ];',
+    'directionalLightShadow = directionalLightShadows[ i ];\n\t\tshadowFacing = dot( geometryNormal, directLight.direction ) + 0.15;');
+}
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0xd8d5cf);
-scene.fog = new THREE.Fog(0xd8d5cf, 4, 9);
+scene.background = new THREE.Color(VIEW.env.ceiling);
 
 const camera = new THREE.PerspectiveCamera(VIEW.fov, 1, 0.05, 30);
 camera.position.set(...VIEW.camera);
@@ -32,54 +83,219 @@ controls.maxDistance = 6;
 controls.maxPolarAngle = Math.PI * 0.55;
 controls.update();
 
-// --- Lights and room ---
-const pmrem = new THREE.PMREMGenerator(renderer);
-scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-scene.environmentIntensity = 0.42;
-pmrem.dispose();
-
+// --- Studio ---
 const LIGHT_DIR = new THREE.Vector3(...VIEW.light).normalize();
-const key = new THREE.DirectionalLight(0xfff0e0, 2.0);
-key.position.copy(LIGHT_DIR).multiplyScalar(4);
+const lightAt = (dir, { color, intensity }, distance = 4) => {
+  const l = new THREE.DirectionalLight(color, intensity);
+  l.position.copy(dir).normalize().multiplyScalar(distance);
+  scene.add(l);
+  return l;
+};
+const key = lightAt(LIGHT_DIR, VIEW.key);
 key.castShadow = true;
 key.shadow.mapSize.set(2048, 2048);
 Object.assign(key.shadow.camera, VIEW.shadow);
 key.shadow.camera.updateProjectionMatrix();
 key.shadow.bias = -0.0004;
 key.shadow.normalBias = 0.004;
-scene.add(key);
-const fill = new THREE.DirectionalLight(0xbcd0ff, 0.45);
-fill.position.set(-2.2, 0.5, 1.4);
-scene.add(fill);
-const rim = new THREE.DirectionalLight(0xfff2e0, 1.3);
-rim.position.set(-0.8, 1.6, -2.4);
-scene.add(rim);
+lightAt(new THREE.Vector3(...VIEW.fill.at), VIEW.fill);
+lightAt(new THREE.Vector3(...VIEW.rim.at), VIEW.rim);
 
-const floor = new THREE.Mesh(new THREE.PlaneGeometry(30, 30), new THREE.MeshStandardMaterial({ color: 0xb4b0aa, roughness: 0.95 }));
-floor.rotation.x = -Math.PI / 2;
-floor.receiveShadow = true;
-scene.add(floor);
+// A graded room with emissive softboxes, blurred by PMREM into the reflections and ambient light.
+function studioEnvironment() {
+  const env = new THREE.Scene(), E = VIEW.env, R = 20;
+  const room = new THREE.SphereGeometry(R, 48, 24), p = room.attributes.position, col = new Float32Array(p.count * 3);
+  const floorC = new THREE.Color(E.floor), wall = new THREE.Color(E.wall), ceiling = new THREE.Color(E.ceiling), c = new THREE.Color();
+  for (let i = 0; i < p.count; i++) {
+    const t = p.getY(i) / R;
+    (t < 0 ? c.lerpColors(wall, floorC, Math.min(-t * 4, 1)) : c.lerpColors(wall, ceiling, t)).toArray(col, i * 3);
+  }
+  room.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  env.add(new THREE.Mesh(room, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide })));
+  for (const b of E.boxes) {
+    const color = new THREE.Color(b.color).multiplyScalar(b.intensity);
+    const box = new THREE.Mesh(new THREE.PlaneGeometry(...b.size), new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide }));
+    box.position.copy(b.at === 'key' ? LIGHT_DIR : new THREE.Vector3(...b.at).normalize()).multiplyScalar(b.distance);
+    box.lookAt(0, 0, 0);
+    env.add(box);
+  }
+  const pmrem = new THREE.PMREMGenerator(renderer), texture = pmrem.fromScene(env, 0.02).texture;
+  pmrem.dispose();
+  env.traverse((o) => { o.geometry?.dispose(); o.material?.dispose(); });
+  return texture;
+}
+scene.environment = studioEnvironment();
+scene.environmentIntensity = VIEW.env.intensity;
+
+// The feet and shins as spheres, read from the posed colliders each step, darken the floor's ambient light.
+const CONTACT = 32;
+const contactUniforms = {
+  uOcc: { value: Array.from({ length: CONTACT }, () => new THREE.Vector4()) },
+  uOccBound: { value: new THREE.Vector4() }, // beyond this sphere the spheres darken nothing worth shading
+  uOccStrength: { value: VIEW.contact.strength },
+};
+function updateContact(f) {
+  const s = f.body.live.segsCoarse, n = f.contactCaps, { uOcc, uOccBound } = contactUniforms;
+  const b = uOccBound.value.set(0, 0, 0, 0);
+  uOcc.value.forEach((v, i) => {
+    const o = Math.round(i * (n - 1) / (CONTACT - 1)) * STRIDE;
+    v.set(s[o] + s[o + 4] / 2, s[o + 1] + s[o + 5] / 2, s[o + 2] + s[o + 6] / 2, s[o + 3] + s[o + 7] / 2);
+    b.x += v.x / CONTACT; b.y += v.y / CONTACT; b.z += v.z / CONTACT;
+  });
+  for (const v of uOcc.value) b.w = Math.max(b.w, Math.hypot(v.x - b.x, v.y - b.y, v.z - b.z) + 1);
+}
+
+// A seamless cove: the floor curves up into a wall all round, so no horizon line shows from any orbit. Vertex
+// colours fade the lit pool in the middle toward the edges.
+function cyclorama() {
+  const { radius: R, fillet: f, height: H, color, pool, edge, lift } = VIEW.cyc, pts = [new THREE.Vector2(R, H)];
+  for (let i = 12; i > 0; i--) { const a = i / 12 * Math.PI / 2; pts.push(new THREE.Vector2(R - f + f * Math.sin(a), f - f * Math.cos(a))); }
+  for (let i = 24; i >= 0; i--) pts.push(new THREE.Vector2((R - f) * (i / 24) ** 1.5, 0));
+  const g = new THREE.LatheGeometry(pts, 96), p = g.attributes.position, col = new Float32Array(p.count * 3);
+  const base = new THREE.Color(color), c = new THREE.Color();
+  for (let i = 0; i < p.count; i++) {
+    const d = Math.hypot(p.getX(i), p.getZ(i)) + p.getY(i); // distance along the cove from the centre
+    c.copy(base).multiplyScalar(edge + (1 - edge) * Math.exp(-((d / pool) ** 2))).toArray(col, i * 3);
+  }
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  const material = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, emissive: base.clone().multiplyScalar(lift * edge) });
+  material.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, contactUniforms);
+    shader.vertexShader = patch(shader.vertexShader, '#include <common>', '#include <common>\nvarying vec3 vWorld;');
+    shader.vertexShader = patch(shader.vertexShader, '#include <begin_vertex>', '#include <begin_vertex>\nvWorld = transformed;');
+    shader.fragmentShader = patch(shader.fragmentShader, '#include <common>', `#include <common>
+      varying vec3 vWorld;
+      uniform vec4 uOcc[ ${CONTACT} ];
+      uniform vec4 uOccBound;
+      uniform float uOccStrength;`);
+    // Cosine-weighted solid angle of each sphere seen from the floor point.
+    shader.fragmentShader = patch(shader.fragmentShader, '#include <aomap_fragment>', `
+      float contact = 1.0, reach = distance( vWorld, uOccBound.xyz );
+      if ( reach < uOccBound.w ) for ( int i = 0; i < ${CONTACT}; i ++ ) {
+        vec3 d = uOcc[ i ].xyz - vWorld;
+        float l2 = dot( d, d );
+        contact *= 1.0 - min( uOcc[ i ].w * uOcc[ i ].w / l2 * max( d.y, 0.0 ) * inversesqrt( l2 ), 1.0 );
+      }
+      contact = mix( 1.0, contact, uOccStrength * ( 1.0 - smoothstep( 0.6, 1.0, reach / uOccBound.w ) ) );
+      reflectedLight.indirectDiffuse *= contact;
+      reflectedLight.directDiffuse *= mix( 1.0, contact, 0.5 );
+      #include <aomap_fragment>`);
+  };
+  const mesh = new THREE.Mesh(g, material);
+  mesh.receiveShadow = true;
+  return mesh;
+}
+scene.add(cyclorama());
 
 // --- Materials ---
-// Cheap subsurface look: wrap light around the terminator and at grazing angles,
-// tinted by the tone's scatter colour.
-const skinUniforms = { uScatter: { value: new THREE.Color() }, uKeyDir: { value: LIGHT_DIR } };
-const skinMat = new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.5, sheen: 0.35, sheenRoughness: 0.6 });
+// Skin. Diffuse light wraps past the terminator per channel (red furthest, from the tone's scatter colour) and the
+// key's shadow edge reddens, standing in for subsurface scattering. A clearcoat lobe adds the sharper oily sheen
+// over the broad base lobe. Bump, roughness and colour noise are keyed on the rest position (aRest), so they stay
+// on the skin as it poses; the fine octaves fade out before they go below a pixel and would sparkle.
+const SKIN = {
+  roughness: 0.58, ior: 1.4, coat: 0.14, coatRoughness: 0.36,
+  wrap: 0.35, // scatter colour (linear) times this is each channel's wrap
+  // Bump octaves in cycles per metre: soft unevenness that breaks up the highlight, a crease mesh, and pores.
+  relief: { freq: 45, slope: 0.02 }, crease: { freq: 420, slope: 0.05 }, pore: { freq: 1400, slope: 0.035 },
+  blotch: 0.06, // how far the relief noise pushes the colour toward red and back
+};
+const skinUniforms = { uWrap: { value: new THREE.Vector3() } };
+const SKIN_GLSL = /* glsl */ `
+  uniform vec3 uWrap;
+  varying vec3 vRest;
+  vec3 skinBaseNormal;
+
+  // One integer hash per lattice point, its bits split into a gradient.
+  vec3 lattice( vec3 i ) {
+    uvec3 p = uvec3( ivec3( i ) );
+    uint h = p.x * 0x8da6b343u ^ p.y * 0xd8163841u ^ p.z * 0xcb1ab31fu;
+    h ^= h >> 16u; h *= 0x7feb352du; h ^= h >> 15u; h *= 0x846ca68bu; h ^= h >> 16u;
+    return vec3( uvec3( h, h >> 11u, h >> 22u ) & uvec3( 2047u, 2047u, 1023u ) ) / vec3( 1023.5, 1023.5, 511.5 ) - 1.0;
+  }
+
+  // Gradient noise: value in x, analytic gradient in yzw.
+  vec4 noised( vec3 x ) {
+    vec3 i = floor( x ), f = fract( x );
+    vec3 u = f * f * f * ( f * ( f * 6.0 - 15.0 ) + 10.0 ), du = 30.0 * f * f * ( f * ( f - 2.0 ) + 1.0 );
+    vec3 ga = lattice( i ), gb = lattice( i + vec3( 1, 0, 0 ) ), gc = lattice( i + vec3( 0, 1, 0 ) ), gd = lattice( i + vec3( 1, 1, 0 ) );
+    vec3 ge = lattice( i + vec3( 0, 0, 1 ) ), gf = lattice( i + vec3( 1, 0, 1 ) ), gg = lattice( i + vec3( 0, 1, 1 ) ), gh = lattice( i + vec3( 1, 1, 1 ) );
+    float va = dot( ga, f ), vb = dot( gb, f - vec3( 1, 0, 0 ) ), vc = dot( gc, f - vec3( 0, 1, 0 ) ), vd = dot( gd, f - vec3( 1, 1, 0 ) );
+    float ve = dot( ge, f - vec3( 0, 0, 1 ) ), vf = dot( gf, f - vec3( 1, 0, 1 ) ), vg = dot( gg, f - vec3( 0, 1, 1 ) ), vh = dot( gh, f - vec3( 1, 1, 1 ) );
+    float v = va + u.x * ( vb - va ) + u.y * ( vc - va ) + u.z * ( ve - va ) + u.x * u.y * ( va - vb - vc + vd )
+      + u.y * u.z * ( va - vc - ve + vg ) + u.z * u.x * ( va - vb - ve + vf ) + u.x * u.y * u.z * ( - va + vb + vc - vd + ve - vf - vg + vh );
+    vec3 g = ga + u.x * ( gb - ga ) + u.y * ( gc - ga ) + u.z * ( ge - ga ) + u.x * u.y * ( ga - gb - gc + gd )
+      + u.y * u.z * ( ga - gc - ge + gg ) + u.z * u.x * ( ga - gb - ge + gf ) + u.x * u.y * u.z * ( - ga + gb + gc - gd + ge - gf - gg + gh )
+      + du * ( vec3( vb - va, vc - va, ve - va ) + u.yzx * vec3( va - vb - vc + vd, va - vc - ve + vg, va - vb - ve + vf )
+      + u.zxy * vec3( va - vb - ve + vf, va - vb - vc + vd, va - vc - ve + vg ) + u.yzx * u.zxy * ( - va + vb + vc - vd + ve - vf - vg + vh ) );
+    return vec4( v, g );
+  }
+
+  // The shadow map cuts off light at the terminator that the wrap carries past it, so the shadow fades out there
+  // and the wrap alone darkens; its edge reddens as scattered light bleeds into it.
+  vec3 skinShadow( float s, vec3 l ) {
+    s = mix( 1.0, s, smoothstep( - 0.15, 0.1, dot( skinBaseNormal, l ) ) );
+    return pow( vec3( s ), 1.0 / ( 1.0 + 2.0 * uWrap ) );
+  }`;
+
+const SKIN_DIRECT = /* glsl */ `
+  void RE_Direct_Skin( const in IncidentLight directLight, const in vec3 geometryPosition, const in vec3 geometryNormal, const in vec3 geometryViewDir, const in vec3 geometryClearcoatNormal, const in PhysicalMaterial material, inout ReflectedLight reflectedLight ) {
+    vec3 irradiance = saturate( dot( geometryNormal, directLight.direction ) ) * directLight.color;
+    #ifdef USE_CLEARCOAT
+      float nlcc = saturate( dot( geometryClearcoatNormal, directLight.direction ) );
+      clearcoatSpecularDirect += nlcc * directLight.color * BRDF_GGX_Clearcoat( directLight.direction, geometryViewDir, geometryClearcoatNormal, material );
+    #endif
+    reflectedLight.directSpecular += irradiance * BRDF_GGX( directLight.direction, geometryViewDir, geometryNormal, material );
+    // Scattered light ignores the pore bump, so diffuse takes the smooth normal.
+    float nl = dot( skinBaseNormal, directLight.direction );
+    vec3 wrap = pow( saturate( ( nl + uWrap ) / ( 1.0 + uWrap ) ), 1.0 + uWrap );
+    reflectedLight.directDiffuse += wrap * directLight.color * BRDF_Lambert( material.diffuseColor );
+  }
+  #undef RE_Direct
+  #define RE_Direct RE_Direct_Skin`;
+
+const skinMat = new THREE.MeshPhysicalMaterial({
+  color: 0xffffff, roughness: SKIN.roughness, ior: SKIN.ior, clearcoat: SKIN.coat, clearcoatRoughness: SKIN.coatRoughness,
+});
 skinMat.onBeforeCompile = (shader) => {
   Object.assign(shader.uniforms, skinUniforms);
-  shader.fragmentShader = shader.fragmentShader
-    .replace('#include <common>', '#include <common>\nuniform vec3 uScatter;\nuniform vec3 uKeyDir;')
-    .replace('#include <opaque_fragment>', `
-      {
-        vec3 Ls = normalize((viewMatrix * vec4(uKeyDir, 0.0)).xyz);
-        float nl = dot(normal, Ls);
-        float terminator = smoothstep(-0.4, 0.1, nl) * (1.0 - smoothstep(0.1, 0.55, nl));
-        float grazing = pow(1.0 - clamp(dot(normal, normalize(vViewPosition)), 0.0, 1.0), 3.0);
-        outgoingLight += uScatter * diffuseColor.rgb * (terminator * 0.45 + grazing * 0.12);
-      }
-      #include <opaque_fragment>`);
+  const { relief, crease, pore, blotch } = SKIN, f = (x) => x.toFixed(4);
+  shader.vertexShader = patch(shader.vertexShader, '#include <common>', '#include <common>\nattribute vec3 aRest;\nvarying vec3 vRest;');
+  shader.vertexShader = patch(shader.vertexShader, '#include <begin_vertex>', '#include <begin_vertex>\nvRest = aRest;');
+  let fs = shader.fragmentShader;
+  fs = patch(fs, '#include <common>', `#include <common>\n${SKIN_GLSL}`);
+  fs = patch(fs, '#include <lights_physical_pars_fragment>', `#include <lights_physical_pars_fragment>\n${SKIN_DIRECT}`);
+  fs = patch(fs, '#include <color_fragment>', `#include <color_fragment>
+    vec3 restDx = dFdx( vRest ), restDy = dFdy( vRest );
+    float footprint = max( length( restDx ), length( restDy ) ); // metres per pixel
+    float creaseFade = 1.0 - smoothstep( 0.2, 0.45, footprint * ${f(crease.freq)} );
+    float poreFade = 1.0 - smoothstep( 0.2, 0.45, footprint * ${f(pore.freq)} );
+    vec4 reliefN = noised( vRest * ${f(relief.freq)} ), creaseN = vec4( 0.0 ), poreN = vec4( 0.0 );
+    if ( creaseFade > 0.0 ) creaseN = noised( vRest * ${f(crease.freq)} );
+    if ( poreFade > 0.0 ) poreN = noised( vRest * ${f(pore.freq)} );
+    diffuseColor.rgb *= 1.0 + ${f(blotch)} * reliefN.x * vec3( 1.0, - 0.35, - 0.5 );`);
+  fs = patch(fs, '#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
+    roughnessFactor = clamp( roughnessFactor * ( 1.0 + 0.12 * poreN.x * poreFade - 0.08 * abs( creaseN.x ) * creaseFade ), 0.05, 1.0 );`);
+  // Bump from the rest-space height gradient, carried to the posed surface by screen derivatives (Mikkelsen).
+  fs = patch(fs, '#include <clearcoat_normal_fragment_maps>', `#include <clearcoat_normal_fragment_maps>
+    skinBaseNormal = normal;
+    {
+      vec3 grad = reliefN.yzw * ${f(relief.slope)} - sign( creaseN.x ) * creaseN.yzw * ${f(crease.slope)} * creaseFade + poreN.yzw * ${f(pore.slope)} * poreFade;
+      vec3 px = dFdx( - vViewPosition ), py = dFdy( - vViewPosition );
+      vec3 r1 = cross( py, normal ), r2 = cross( normal, px );
+      float det = dot( px, r1 );
+      vec3 surf = ( dot( grad, restDx ) * r1 + dot( grad, restDy ) * r2 ) / ( abs( det ) > 1e-20 ? det : 1e-20 );
+      normal = normalize( normal - surf );
+      #ifdef USE_CLEARCOAT
+        clearcoatNormal = normalize( clearcoatNormal - surf );
+      #endif
+    }`);
+  const shadowed = THREE.ShaderChunk.lights_fragment_begin;
+  let begin = patch(shadowed, '? getShadow( directionalShadowMap[ i ]', '? skinShadow( getShadow( directionalShadowMap[ i ]');
+  begin = patch(begin, 'vDirectionalShadowCoord[ i ] ) : 1.0;', 'vDirectionalShadowCoord[ i ] ), directLight.direction ) : vec3( 1.0 );');
+  fs = patch(fs, '#include <lights_fragment_begin>', begin);
+  shader.fragmentShader = fs;
 };
-skinMat.customProgramCacheKey = () => 'skin-scatter';
+skinMat.customProgramCacheKey = () => 'skin';
 
 const nylon = nylonMaterial(LIGHT_DIR);
 
@@ -167,6 +383,7 @@ function skinMesh(rig, { pos, rings, segs, startPole = false }, by) {
   g.setAttribute('position', new THREE.BufferAttribute(track(rig, pos, by), 3));
   g.setIndex(new THREE.BufferAttribute(gridIndex(rings, segs, true, true, startPole), 1));
   g.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(pos.length), 3));
+  g.setAttribute('aRest', new THREE.BufferAttribute(pos, 3));
   shadeSkin(g);
   g.boundingSphere = BOUNDS; // fixed: the pose moves it
   const m = new THREE.Mesh(g, skinMat);
@@ -264,10 +481,12 @@ function buildFigure(shape, mods) {
   scene.add(group);
   const f = {
     body, rig, skin, group, clothMeshes, stockings, skirt, shirt: null, choker: null, motions: buildMotions(rig),
+    contactCaps: (body.legs[0].segsCoarse.length + body.legs[1].segsCoarse.length) / STRIDE, // the legs lead the union
     get cloths() { return this.clothMeshes.map((m) => m.userData.cloth); },
   };
   placeShirt(f, entryOf('shirt'));
   placeChoker(f, entryOf('choker'));
+  updateContact(f);
   return f;
 }
 
@@ -406,7 +625,11 @@ const OPTIONS = {
   },
   skin: {
     title: 'Skin', list: SKIN_TONES, swatch: (e) => e.color,
-    set(e) { skinMat.color.set(e.color); skinUniforms.uScatter.value.set(e.scatter); },
+    set(e) {
+      skinMat.color.set(e.color);
+      const s = new THREE.Color(e.scatter);
+      skinUniforms.uWrap.value.set(s.r, s.g, s.b).multiplyScalar(SKIN.wrap);
+    },
   },
   stocking: {
     title: 'Stockings', list: STOCKING_COLORS, swatch: colourCss,
@@ -574,6 +797,7 @@ function advance(dt) {
   // Standing still the bust rings down, and setPose does nothing once it is at rest.
   stepSoft(fig.rig, target, dt);
   setPose(fig, target);
+  updateContact(fig);
   frameView(dt);
   for (const m of fig.clothMeshes) {
     if (!m.visible) continue;
@@ -607,7 +831,7 @@ renderer.setAnimationLoop(frame);
 // Scripted access for testing from the console.
 window.__sim = {
   get cloths() { return fig.cloths; },
-  camera, controls, apply, settings,
+  camera, controls, renderer, scene, apply, settings,
   step(frames = 1) { for (let f = 0; f < frames; f++) advance(1 / 60); controls.update(); renderer.render(scene, camera); },
   grabAt(clothIndex, vertex) {
     const c = fig.cloths[clothIndex];

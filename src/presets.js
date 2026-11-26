@@ -238,7 +238,8 @@ export const BODIES = {
   },
 };
 
-// color: sRGB albedo. scatter: warm subsurface tint added near the shadow terminator.
+// color: sRGB albedo. scatter: how far each channel's light wraps past the shadow terminator, as a colour so red
+// reaches furthest; main.js scales it (linear) by SKIN.wrap. Darker skin absorbs more, so its scatter is darker.
 export const SKIN_TONES = [
   { id: 'very-light', label: 'Very light', color: '#f1d4c2', scatter: '#e8806a' },
   { id: 'light', label: 'Light', color: '#e8bfa1', scatter: '#e07058' },
@@ -420,12 +421,34 @@ export const MOTIONS = {
 // Seconds a motion's amplitude takes to blend in or out.
 export const MOTION_BLEND = 0.3;
 
-// Default camera and key light. follow: the view rises by `share` of the root's height above standing, eased
+// Default camera and the studio. follow: the view rises by `share` of the root's height above standing, eased
 // over `lag` seconds, so a jump's apex keeps the head in frame. shadow: the key light's shadow box, wide enough
-// for the figure at the apex with the arms up.
+// for the figure at the apex with the arms up. Colours are sRGB.
+// key.softness: tangent of the key's angular radius, so a penumbra is that times the blocker-to-receiver
+// distance; key.maxBlur caps the penumbra radius in metres. env: the room PMREM blurs into reflections and
+// ambient, with softboxes placed by direction (`key` is the key light's) and distance. cyc: the backdrop, a floor
+// that curves up into a wall all round; `pool` metres is how far the lit area reaches before it falls to `edge`,
+// and `lift` is the share of its colour it shows unlit, as backdrop lights would keep the wall away from the key
+// from going murky.
+// contact: how strongly the feet and shins darken the floor's ambient light.
 export const VIEW = {
   fov: 32, camera: [1.43, 1.26, 3.63], target: [0, 0.93, 0],
   follow: { share: 0.5, lag: 0.3 },
   light: [1.2, 2.4, 1.6],
   shadow: { left: -1, right: 1, top: 1.7, bottom: -0.2, near: 1, far: 8 },
+  exposure: 1.0,
+  key: { color: '#fff4ea', intensity: 2.5, softness: 0.07, maxBlur: 0.12 },
+  fill: { color: '#d4e0ff', intensity: 0.4, at: [-2.2, 0.6, 1.6] },
+  rim: { color: '#fff6ee', intensity: 1.0, at: [-0.8, 1.6, -2.4] },
+  env: {
+    intensity: 0.8, floor: '#b8b6b2', wall: '#a4a3a1', ceiling: '#83838a',
+    boxes: [
+      { at: 'key', distance: 6, size: [2.6, 3.2], color: '#fff3e6', intensity: 3 },
+      { at: [-2.2, 0.6, 1.6], distance: 6, size: [1.4, 3.6], color: '#dfe8ff', intensity: 2.2 },
+      { at: [-1.2, 0.8, -2.4], distance: 6, size: [0.6, 4], color: '#ffffff', intensity: 4 },
+      { at: [1.4, 0.8, -2.2], distance: 6, size: [0.6, 4], color: '#ffffff', intensity: 3 },
+    ],
+  },
+  cyc: { radius: 7, fillet: 2.4, height: 14, color: '#d8d8d8', pool: 4.5, edge: 0.7, lift: 0.14 },
+  contact: { strength: 0.85 },
 };
