@@ -6,7 +6,7 @@ import { buildBody, buildTorso, buildHead, buildChokerRest, buildShirtRest, buil
 import { BODIES, BUILD, DEFAULTS, POSE, MOTIONS, MOTION_BLEND, SHIRT, SHIRT_STYLES, SHIRT_COLORS, CHOKER, CHOKER_STYLES, CHOKER_COLORS, STOCKING_COLORS } from '../src/presets.js';
 import { makeStocking, makeSkirt, makeShirt, legSkin, toeSkins, armSkins, STOCKING_BAND, SKIRT_THICKNESS } from '../src/garments.js';
 import { colourCss } from '../src/colourway.js';
-import { stepCloth, beginGrab, endGrab, computeStretch, nearest, resetCloth, concatSegs, gridIndex, computeNormals, STRIDE } from '../src/cloth.js';
+import { stepCloth, stepCloths, beginGrab, endGrab, computeStretch, nearest, resetCloth, concatSegs, gridIndex, computeNormals, STRIDE } from '../src/cloth.js';
 import { makeRig, track, applyPose, stepSoft, makePose, blendPose, feetOf, STAND, ROOT, BLEND } from '../src/pose.js';
 import { buildMotions, motionPose, makeDriver, want, drive, restart } from '../src/motion.js';
 
@@ -1634,6 +1634,28 @@ for (const [id, shape] of Object.entries(BODIES)) for (const build of [0, 1]) {
     const sorted = [...runs].sort((a, b) => a - b), med = sorted[2];
     console.log(`budget: posing + 2 stockings, skirt and tank shirt awake: median ${med.toFixed(2)} ms/frame over 5 runs of 60 frames (${sorted.map((v) => v.toFixed(2)).join(', ')}): ${need(med < 12, `${tag} frame ${med.toFixed(2)} ms`)}`);
   }
+}
+
+// The page steps its cloths in pairs. A pair must land on the same bits as each cloth stepped alone.
+{
+  console.log('\n== paired stepping');
+  const dressed = () => {
+    const body = buildBody(BODIES.feminine, { thigh: 0, glute: 0 }, STOCKING_BAND), rig = makeRig(body);
+    const cloths = [...body.legs.map((l) => makeStocking(body, l)), makeSkirt(body), makeShirt(body, SHIRT_STYLES.find((s) => s.id === 'tank'))];
+    return { rig, cloths, M: buildMotions(rig), d: makeDriver() };
+  };
+  const alone = dressed(), paired = dressed();
+  let differ = 0, stepped = 0;
+  for (let f = 0; f < 120; f++) {
+    if (f === 0) { want(alone.d, 'walk'); want(paired.d, 'walk'); }
+    if (f === 60) { want(alone.d, 'jump'); want(paired.d, 'jump'); }
+    applyPose(alone.rig, alone.cloths, drive(alone.d, DT, alone.rig, alone.M));
+    for (const c of alone.cloths) stepCloth(c, DT);
+    applyPose(paired.rig, paired.cloths, drive(paired.d, DT, paired.rig, paired.M));
+    for (let k = 0; k < paired.cloths.length; k += 2) stepped += stepCloths(paired.cloths[k], paired.cloths[k + 1], DT) === 3;
+    alone.cloths.forEach((c, k) => { const p = paired.cloths[k].pos; for (let i = 0; i < p.length; i++) differ += !Object.is(p[i], c.pos[i]); });
+  }
+  console.log(`walk then jump, 120 frames, 2 pairs: ${stepped} pair steps moved both cloths, ${differ} coordinates differ from lone stepping: ${need(differ === 0 && stepped === 240, `paired stepping: ${differ} differ, ${stepped} of 240 stepped`)}`);
 }
 
 // Every colourway has a swatch, and a patterned stocking entry has what the shader needs.
