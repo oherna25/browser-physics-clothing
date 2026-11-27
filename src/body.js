@@ -2,7 +2,7 @@
 // produces the skin mesh, the garments' rest shapes and the colliders, so the
 // cloth can never disagree with the surface it sits on.
 
-import { nearest, packSegs, concatSegs, STRIDE } from './cloth.js';
+import { nearest, packSegs, concatSegs, computeNormals, STRIDE } from './cloth.js';
 import { BODIES, BUILD, DEFAULTS, POSE } from './presets.js';
 
 const cr = (a, b, c, d, t) =>
@@ -963,4 +963,50 @@ export function buildSkirt(body, { pleats = 28, rings = 24, waistY = SKIRT_WAIST
     }
   }
   return { pos, rings, segs: nseg, pleats };
+}
+
+const gauss = (d, r) => Math.exp(-(d * d) / (r * r));
+// How far a point lies past the wrist along the forearm's line, in metres.
+const wristward = ({ frame: { o, a } }, x, y, z) => (x - o[0]) * a[0] + (y - o[1]) * a[1] + (z - o[2]) * a[2];
+
+/**
+ * Per-vertex skin traits in rest space, { flush, pale, thin } interleaved: how far the colour shifts toward blood red
+ * and toward the paler palm and sole, and how thin the part is from its curvature. `part` names the skin piece
+ * (leg, toe, torso, arm, hand, head); `joints` are the body's sagittal pivots and `limb` the piece's arm or leg.
+ */
+export function skinTraits(pos, index, part, joints, limb, { flush, pale, thin }) {
+  const n = pos.length / 3, nrm = new Float32Array(pos.length), out = new Float32Array(n * 3);
+  computeNormals(pos, index, nrm);
+  const curve = new Float32Array(n), edges = new Uint16Array(n);
+  for (let t = 0; t < index.length; t += 3) {
+    for (let e = 0; e < 3; e++) {
+      const a = index[t + e], b = index[t + (e + 1) % 3], A = a * 3, B = b * 3;
+      // Signed: normals part along a convex edge and close across a crease, which is not thin.
+      const dx = pos[B] - pos[A], dy = pos[B + 1] - pos[A + 1], dz = pos[B + 2] - pos[A + 2], d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 < 1e-14) continue;
+      const k = ((nrm[B] - nrm[A]) * dx + (nrm[B + 1] - nrm[A + 1]) * dy + (nrm[B + 2] - nrm[A + 2]) * dz) / d2;
+      curve[a] += k; curve[b] += k; edges[a]++; edges[b]++;
+    }
+  }
+  const regions = flush.regions.filter((r) => r.parts.includes(part));
+  for (let i = 0, o = 0; i < n; i++, o += 3) {
+    const x = pos[o], y = pos[o + 1], z = pos[o + 2], nx = nrm[o], ny = nrm[o + 1], nz = nrm[o + 2];
+    const th = smoothstep(thin.from, thin.to, edges[i] ? curve[i] / edges[i] : 0);
+    let f = th * flush.thin;
+    for (const r of regions) {
+      let w = r.amount;
+      if (r.joint) {
+        const [py, pz] = joints[r.joint];
+        w *= gauss(Math.hypot(y - py, z - pz), r.radius) * smoothstep(-0.3, 0.6, r.facing * nz);
+      }
+      if (r.below) w *= 1 - smoothstep(joints[r.below][0], joints[r.below][0] + r.fade, y);
+      if (r.pastWrist) w *= smoothstep(r.pastWrist[0], r.pastWrist[1], wristward(limb, x, y, z));
+      f += w;
+    }
+    let p = 0;
+    if (part === 'hand') p = pale.palm * smoothstep(0.1, 0.7, -Math.sign(x) * nx) * smoothstep(pale.pastWrist[0], pale.pastWrist[1], wristward(limb, x, y, z));
+    if (part === 'leg' || part === 'toe') p = pale.sole * smoothstep(0.3, 0.8, -ny) * (1 - smoothstep(0.02, 0.05, y));
+    out[o] = Math.min(f, 1); out[o + 1] = p; out[o + 2] = th;
+  }
+  return out;
 }

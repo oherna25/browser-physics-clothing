@@ -1,13 +1,13 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { buildBody, buildTorso, buildHead, buildChokerRest, neckPoint } from './body.js';
+import { buildBody, buildTorso, buildHead, buildChokerRest, neckPoint, skinTraits } from './body.js';
 import { makeStocking, makeSkirt, makeShirt, legSkin, toeSkins, armSkins, STOCKING_BAND } from './garments.js';
 import { stepCloth, stepCloths, beginGrab, endGrab, resetCloth, computeStretch, computeNormals, gridIndex, STRIDE } from './cloth.js';
 import { buildMotions, makeDriver, want, restart, drive, followView } from './motion.js';
 import { makeRig, track, follow, poseSet, angleOf, applyPose, stepSoft, makePose, blendPose, STAND, ROOT, BLEND } from './pose.js';
 import { nylonMaterial, setNylonColour } from './nylon.js';
 import { colourCss, patternTexture, repaint } from './colourway.js';
-import { BODIES, SKIN_TONES, STOCKING_COLORS, SKIRT_COLORS, SHIRT_STYLES, SHIRT_COLORS, CHOKER_STYLES, CHOKER_COLORS, CHOKER, DEFAULTS, POSE, MOTIONS, VIEW } from './presets.js';
+import { BODIES, SKIN_TONES, STOCKING_COLORS, SKIRT_COLORS, SHIRT_STYLES, SHIRT_COLORS, CHOKER_STYLES, CHOKER_COLORS, CHOKER, DEFAULTS, SKIN, POSE, MOTIONS, VIEW } from './presets.js';
 
 const canvas = document.getElementById('view');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -188,22 +188,17 @@ function cyclorama() {
 scene.add(cyclorama());
 
 // --- Materials ---
-// Skin. Diffuse light wraps past the terminator per channel (red furthest, from the tone's scatter colour) and the
-// key's shadow edge reddens, standing in for subsurface scattering. A clearcoat lobe adds the sharper oily sheen
-// over the broad base lobe. Bump, roughness and colour noise are keyed on the rest position (aRest), so they stay
-// on the skin as it poses; the fine octaves fade out before they go below a pixel and would sparkle.
-const SKIN = {
-  roughness: 0.58, ior: 1.4, coat: 0.14, coatRoughness: 0.36,
-  wrap: 0.35, // scatter colour (linear) times this is each channel's wrap
-  // Bump octaves in cycles per metre: soft unevenness that breaks up the highlight, a crease mesh, and pores.
-  relief: { freq: 45, slope: 0.02 }, crease: { freq: 420, slope: 0.05 }, pore: { freq: 1400, slope: 0.035 },
-  blotch: 0.06, // how far the relief noise pushes the colour toward red and back
-};
+// Skin. The wrap and the reddened shadow edge stand in for subsurface scattering, stronger on thin parts, which also
+// glow when lit from behind. Bump, roughness and colour noise are keyed on the rest position (aRest), so they stay on
+// the skin as it poses; the fine octaves fade out before they go below a pixel and would sparkle. aSkin carries the
+// baked flush, pale and thin traits from skinTraits.
 const skinUniforms = { uWrap: { value: new THREE.Vector3() } };
+const v3 = (a) => `vec3( ${a.map((x) => x.toFixed(4)).join(', ')} )`;
 const SKIN_GLSL = /* glsl */ `
   uniform vec3 uWrap;
   varying vec3 vRest;
-  vec3 skinBaseNormal;
+  varying vec3 vSkin;
+  vec3 skinBaseNormal, skinWrap;
 
   // One integer hash per lattice point, its bits split into a gradient.
   vec3 lattice( vec3 i ) {
@@ -234,7 +229,7 @@ const SKIN_GLSL = /* glsl */ `
   // and the wrap alone darkens; its edge reddens as scattered light bleeds into it.
   vec3 skinShadow( float s, vec3 l ) {
     s = mix( 1.0, s, smoothstep( - 0.15, 0.1, dot( skinBaseNormal, l ) ) );
-    return pow( vec3( s ), 1.0 / ( 1.0 + 2.0 * uWrap ) );
+    return pow( vec3( s ), 1.0 / ( 1.0 + 2.0 * skinWrap ) );
   }`;
 
 const SKIN_DIRECT = /* glsl */ `
@@ -247,8 +242,11 @@ const SKIN_DIRECT = /* glsl */ `
     reflectedLight.directSpecular += irradiance * BRDF_GGX( directLight.direction, geometryViewDir, geometryNormal, material );
     // Scattered light ignores the pore bump, so diffuse takes the smooth normal.
     float nl = dot( skinBaseNormal, directLight.direction );
-    vec3 wrap = pow( saturate( ( nl + uWrap ) / ( 1.0 + uWrap ) ), 1.0 + uWrap );
+    vec3 wrap = pow( saturate( ( nl + skinWrap ) / ( 1.0 + skinWrap ) ), 1.0 + skinWrap );
     reflectedLight.directDiffuse += wrap * directLight.color * BRDF_Lambert( material.diffuseColor );
+    vec3 back = normalize( directLight.direction + skinBaseNormal * TRANS_DISTORTION );
+    float through = pow( saturate( dot( geometryViewDir, - back ) ), TRANS_POWER ) * TRANS_SCALE * vSkin.z;
+    reflectedLight.directDiffuse += through * directLight.color * uWrap / max( uWrap.r, 1e-3 ) * BRDF_Lambert( material.diffuseColor );
   }
   #undef RE_Direct
   #define RE_Direct RE_Direct_Skin`;
@@ -258,11 +256,12 @@ const skinMat = new THREE.MeshPhysicalMaterial({
 });
 skinMat.onBeforeCompile = (shader) => {
   Object.assign(shader.uniforms, skinUniforms);
-  const { relief, crease, pore, blotch } = SKIN, f = (x) => x.toFixed(4);
-  shader.vertexShader = patch(shader.vertexShader, '#include <common>', '#include <common>\nattribute vec3 aRest;\nvarying vec3 vRest;');
-  shader.vertexShader = patch(shader.vertexShader, '#include <begin_vertex>', '#include <begin_vertex>\nvRest = aRest;');
+  const { relief, crease, pore, blotch, flush, pale, translucency: tr } = SKIN, f = (x) => x.toFixed(4);
+  shader.vertexShader = patch(shader.vertexShader, '#include <common>', '#include <common>\nattribute vec3 aRest, aSkin;\nvarying vec3 vRest, vSkin;');
+  shader.vertexShader = patch(shader.vertexShader, '#include <begin_vertex>', '#include <begin_vertex>\nvRest = aRest; vSkin = aSkin;');
   let fs = shader.fragmentShader;
-  fs = patch(fs, '#include <common>', `#include <common>\n${SKIN_GLSL}`);
+  const defs = `#define TRANS_POWER ${f(tr.power)}\n#define TRANS_SCALE ${f(tr.scale)}\n#define TRANS_DISTORTION ${f(tr.distortion)}\n`;
+  fs = patch(fs, '#include <common>', `#include <common>\n${defs}${SKIN_GLSL}`);
   fs = patch(fs, '#include <lights_physical_pars_fragment>', `#include <lights_physical_pars_fragment>\n${SKIN_DIRECT}`);
   fs = patch(fs, '#include <color_fragment>', `#include <color_fragment>
     vec3 restDx = dFdx( vRest ), restDy = dFdy( vRest );
@@ -272,7 +271,9 @@ skinMat.onBeforeCompile = (shader) => {
     vec4 reliefN = noised( vRest * ${f(relief.freq)} ), creaseN = vec4( 0.0 ), poreN = vec4( 0.0 );
     if ( creaseFade > 0.0 ) creaseN = noised( vRest * ${f(crease.freq)} );
     if ( poreFade > 0.0 ) poreN = noised( vRest * ${f(pore.freq)} );
-    diffuseColor.rgb *= 1.0 + ${f(blotch)} * reliefN.x * vec3( 1.0, - 0.35, - 0.5 );`);
+    diffuseColor.rgb *= 1.0 + ${f(blotch)} * reliefN.x * vec3( 1.0, - 0.35, - 0.5 );
+    diffuseColor.rgb = mix( diffuseColor.rgb, pow( diffuseColor.rgb, vec3( ${f(pale.gamma)} ) ), vSkin.y ) * mix( vec3( 1.0 ), ${v3(flush.tint)}, vSkin.x );
+    skinWrap = uWrap * ( 1.0 + ${f(SKIN.thinWrap)} * vSkin.z / max( ${f(SKIN.wrap)}, 1e-3 ) );`);
   fs = patch(fs, '#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
     roughnessFactor = clamp( roughnessFactor * ( 1.0 + 0.12 * poreN.x * poreFade - 0.08 * abs( creaseN.x ) * creaseFade ), 0.05, 1.0 );`);
   // Bump from the rest-space height gradient, carried to the posed surface by screen derivatives (Mikkelsen).
@@ -378,10 +379,11 @@ function shadeSkin(g) {
 }
 
 // Skin follows the pose: its position buffer is the rig's live copy of the rest positions.
-function skinMesh(rig, { pos, index, rings, segs, startPole = false }, by) {
-  const g = new THREE.BufferGeometry();
+function skinMesh(rig, { pos, index, rings, segs, startPole = false }, by, part) {
+  const g = new THREE.BufferGeometry(), tris = index ?? gridIndex(rings, segs, true, true, startPole);
   g.setAttribute('position', new THREE.BufferAttribute(track(rig, pos, by), 3));
-  g.setIndex(new THREE.BufferAttribute(index ?? gridIndex(rings, segs, true, true, startPole), 1));
+  g.setIndex(new THREE.BufferAttribute(tris, 1));
+  g.setAttribute('aSkin', new THREE.BufferAttribute(skinTraits(pos, tris, part, rig.joints, by.kind ? by : null, SKIN), 3));
   g.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(pos.length), 3));
   g.setAttribute('aRest', new THREE.BufferAttribute(pos, 3));
   shadeSkin(g);
@@ -456,10 +458,10 @@ function buildFigure(shape, mods) {
   const rig = makeRig(body);
   const group = new THREE.Group();
   const skin = [
-    ...body.legs.flatMap((leg) => [legSkin(leg), ...toeSkins(leg)].map((g) => skinMesh(rig, g, leg))),
-    skinMesh(rig, buildTorso(body), BLEND),
-    ...body.arms.flatMap((arm) => armSkins(arm).map((g) => skinMesh(rig, g, arm))),
-    skinMesh(rig, buildHead(body), ROOT),
+    ...body.legs.flatMap((leg) => [legSkin(leg), ...toeSkins(leg)].map((g, k) => skinMesh(rig, g, leg, k ? 'toe' : 'leg'))),
+    skinMesh(rig, buildTorso(body), BLEND, 'torso'),
+    ...body.arms.flatMap((arm) => armSkins(arm).map((g, k) => skinMesh(rig, g, arm, k ? 'hand' : 'arm'))),
+    skinMesh(rig, buildHead(body), ROOT, 'head'),
   ];
   group.add(...skin);
 

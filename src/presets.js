@@ -350,6 +350,36 @@ export const SKIN_TONES = [
   { id: 'deep', label: 'Deep', color: '#5a3a28', scatter: '#8a2f18' },
 ];
 
+// Skin shading. Diffuse light wraps past the terminator per channel by the tone's scatter colour times `wrap`, and
+// more on thin parts (`thinWrap` adds to it at full thinness). A clearcoat lobe adds the oily sheen over the broad
+// base lobe. Bump octaves are in cycles per metre: soft unevenness that breaks up the highlight, a crease mesh, pores.
+// blotch: how far the relief noise pushes the colour toward red and back.
+// flush: blood showing through, as a colour multiplier at full flush; regions add it at a joint (a Gaussian of
+// `radius` metres about the pivot, on the side `facing` +z or -z), below a joint, or past the wrist along the
+// forearm (from..to metres), and thin parts add `thin`.
+// pale: the palm and sole hold less melanin; their linear colour is raised to `gamma`, which lifts a deep tone
+// about twice as far as a light one. The palm's lift ramps in past the wrist (from..to metres). thin: rest curvature, 1/m, mapped from `from` to `to` onto 0..1.
+// translucency: light from behind a thin part glows through it in the scatter colour.
+export const SKIN = {
+  roughness: 0.54, ior: 1.4, coat: 0.24, coatRoughness: 0.32,
+  wrap: 0.35, thinWrap: 0.5,
+  relief: { freq: 45, slope: 0.02 }, crease: { freq: 420, slope: 0.05 }, pore: { freq: 1400, slope: 0.035 },
+  blotch: 0.06,
+  flush: {
+    tint: [1.0, 0.74, 0.72], thin: 0.5,
+    regions: [
+      { parts: ['arm', 'hand'], pastWrist: [-0.04, 0.03], amount: 0.45 },
+      { parts: ['toe'], amount: 0.45 },
+      { parts: ['leg'], below: 'ankle', fade: 0.08, amount: 0.4 },
+      { parts: ['leg'], joint: 'knee', radius: 0.07, facing: 1, amount: 0.55 },
+      { parts: ['arm'], joint: 'elbow', radius: 0.06, facing: -1, amount: 0.55 },
+    ],
+  },
+  pale: { gamma: 0.7, palm: 0.8, sole: 0.8, pastWrist: [0, 0.04] },
+  thin: { from: 25, to: 130 },
+  translucency: { power: 3, scale: 0.6, distortion: 0.3 },
+};
+
 const RAINBOW = ['#e53935', '#fb8c00', '#fdd835', '#43a047', '#1e88e5', '#8e24aa'];
 
 export const STOCKING_COLORS = [
