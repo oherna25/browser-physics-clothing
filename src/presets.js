@@ -595,6 +595,7 @@ export const MOTION_BLEND = 0.3;
 // contact: how strongly the feet and shins darken the floor's ambient light.
 export const VIEW = {
   fov: 32, camera: [1.43, 1.26, 3.63], target: [0, 0.93, 0],
+  pixelRatio: { max: 2, touch: 1.5 }, // device pixels per CSS pixel, capped lower on touch screens
   follow: { share: 0.5, lag: 0.3 },
   light: [1.2, 2.4, 1.6],
   shadow: { left: -1, right: 1, top: 1.7, bottom: -0.2, near: 1, far: 8 },

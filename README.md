@@ -28,6 +28,7 @@ Open the URL that Vite prints, normally `http://localhost:5173/`.
 
 - Drag the fabric to pull it. Release it and it snaps back.
 - Drag the background to orbit. Scroll to zoom.
+- On a phone or tablet, pinch to zoom. A second finger lets go of the fabric and pinches instead. The controls sit in a sheet at the bottom: tap its bar to open or close it.
 - **Motion** switches between Stand, Walk, and Jump.
 - **Body** switches between the feminine and the masculine mannequin.
 - **Thigh**, **Glutes**, and **Chest** reshape the body. The body rebuilds when you release the slider. **Chest** appears on the feminine body only.
@@ -95,6 +96,8 @@ Read this section before you change code.
 4. For a change you can see, check the page as well. A passing test does not prove that the picture is right.
 
 **Redraws.** The frame loop draws only when something it shows changed. The pose, a moving cloth, the camera, `apply`, any control in the panel, and a resize each mark the frame stale. A new way to change the picture from outside those paths must call `invalidate()` in `src/main.js`, or the page keeps showing the old frame.
+
+**Small screens.** At 820 px wide or less, or on a touch screen, the panel is a bottom sheet and the canvas fills the space above it. On a short landscape screen the open sheet is a column on the right instead. A `ResizeObserver` on the canvas resizes the renderer when the sheet opens or closes. Touch screens draw at the `VIEW.pixelRatio.touch` cap. A touch grab sets `controls.enableRotate = false` instead of turning the controls off, so they keep tracking the finger for a pinch.
 
 **Drive the page from the console.** `window.__sim` exposes these members:
 

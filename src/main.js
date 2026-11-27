@@ -12,7 +12,9 @@ import { BODIES, SKIN_TONES, STOCKING_COLORS, SKIRT_COLORS, SHIRT_STYLES, SHIRT_
 
 const canvas = document.getElementById('view');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+// Touch screens are phones and tablets: their GPUs fill fewer pixels per frame, so they draw at a lower ratio.
+const touchScreen = matchMedia('(pointer: coarse)').matches;
+renderer.setPixelRatio(Math.min(devicePixelRatio, touchScreen ? VIEW.pixelRatio.touch : VIEW.pixelRatio.max));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.NeutralToneMapping; // keeps skin hue where ACES shifts it and AgX greys it
@@ -581,15 +583,22 @@ function stopGrab() {
   if (!drag) return;
   endGrab(drag.cloth);
   drag = null;
+  controls.enableRotate = true;
 }
 
 // Capture phase so this runs before OrbitControls sees the event.
+// A mouse grab turns the orbit controls off. A touch grab only stops them rotating, so they keep tracking the
+// finger: a second finger then lets go of the cloth and pinches, and a finger that lands while the view is already
+// orbiting or pinching never grabs.
 canvas.addEventListener('pointerdown', (e) => {
-  if (e.button !== 0 || drag) return;
+  if (e.pointerType === 'touch') {
+    if (drag) { stopGrab(); return; }
+    if (!e.isPrimary) return;
+  } else if (e.button !== 0 || drag) return;
   const h = pick(e);
   if (!h || !startGrab(h.object.userData.cloth, h.point)) return;
-  controls.enabled = false;
-  canvas.setPointerCapture(e.pointerId);
+  if (e.pointerType === 'touch') controls.enableRotate = false;
+  else { controls.enabled = false; canvas.setPointerCapture(e.pointerId); }
   drag.pointerId = e.pointerId;
   plane.setFromNormalAndCoplanarPoint(camera.getWorldDirection(tmpV), h.point);
   canvas.style.cursor = 'grabbing';
@@ -771,13 +780,18 @@ for (const [key, opt] of Object.entries(OPTIONS)) {
 }
 
 // --- Loop ---
+// The canvas resizes with the window and, on small screens, when the control sheet opens or closes above it.
 function resize() {
   const w = canvas.clientWidth, h = canvas.clientHeight;
   renderer.setSize(w, h, false);
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
 }
-addEventListener('resize', () => { resize(); invalidate(); });
+new ResizeObserver(() => { resize(); invalidate(); }).observe(canvas);
+$('sheetToggle').addEventListener('click', () => {
+  const open = $('panel').classList.toggle('open');
+  $('sheetToggle').setAttribute('aria-expanded', String(open));
+});
 for (const type of ['input', 'change', 'click']) $('panel').addEventListener(type, invalidate, true);
 resize();
 
