@@ -583,6 +583,7 @@ function stopGrab() {
   if (!drag) return;
   endGrab(drag.cloth);
   drag = null;
+  controls.enabled = true;
   controls.enableRotate = true;
 }
 
@@ -787,7 +788,12 @@ function resize() {
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
 }
-new ResizeObserver(() => { resize(); invalidate(); }).observe(canvas);
+// Observer callbacks run after this frame's draw, and setSize clears the canvas, so draw again here or the
+// frame shows blank.
+new ResizeObserver(() => {
+  resize();
+  if (fig) { renderer.render(scene, camera); stale = false; }
+}).observe(canvas);
 $('sheetToggle').addEventListener('click', () => {
   const open = $('panel').classList.toggle('open');
   $('sheetToggle').setAttribute('aria-expanded', String(open));
