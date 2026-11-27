@@ -7,6 +7,7 @@ import { buildMotions, makeDriver, want, restart, drive, followView } from './mo
 import { makeRig, track, follow, poseSet, angleOf, applyPose, stepSoft, makePose, blendPose, STAND, ROOT, BLEND } from './pose.js';
 import { nylonMaterial, setNylonColour } from './nylon.js';
 import { colourCss, patternTexture, repaint } from './colourway.js';
+import { noiseVolume } from './noise.js';
 import { BODIES, SKIN_TONES, STOCKING_COLORS, SKIRT_COLORS, SHIRT_STYLES, SHIRT_COLORS, CHOKER_STYLES, CHOKER_COLORS, CHOKER, DEFAULTS, SKIN, POSE, MOTIONS, VIEW } from './presets.js';
 
 const canvas = document.getElementById('view');
@@ -203,7 +204,20 @@ scene.add(cyclorama());
 // glow when lit from behind. Bump, roughness and colour noise are keyed on the rest position (aRest), so they stay on
 // the skin as it poses; the fine octaves fade out before they go below a pixel and would sparkle. aSkin carries the
 // baked flush, pale and thin traits from skinTraits.
-const skinUniforms = { uWrap: { value: new THREE.Vector3() } };
+// The skin's bump and blotch noise, baked once into a tiling volume; linear filtering between texel centres reads it.
+function noiseTexture({ period, per }) {
+  const { data, size } = noiseVolume(period, per), half = new Uint16Array(data.length);
+  for (let i = 0; i < data.length; i++) half[i] = THREE.DataUtils.toHalfFloat(data[i]);
+  const tex = new THREE.Data3DTexture(half, size, size, size);
+  tex.type = THREE.HalfFloatType;
+  tex.format = THREE.RGBAFormat;
+  tex.minFilter = tex.magFilter = THREE.LinearFilter;
+  tex.wrapS = tex.wrapT = tex.wrapR = THREE.RepeatWrapping;
+  tex.unpackAlignment = 1;
+  tex.needsUpdate = true;
+  return tex;
+}
+const skinUniforms = { uWrap: { value: new THREE.Vector3() }, uNoise: { value: noiseTexture(SKIN.noise) } };
 const v3 = (a) => `vec3( ${a.map((x) => x.toFixed(4)).join(', ')} )`;
 const SKIN_GLSL = /* glsl */ `
   uniform vec3 uWrap;
@@ -211,30 +225,10 @@ const SKIN_GLSL = /* glsl */ `
   varying vec3 vSkin;
   vec3 skinBaseNormal, skinWrap;
 
-  // One integer hash per lattice point, its bits split into a gradient.
-  vec3 lattice( vec3 i ) {
-    uvec3 p = uvec3( ivec3( i ) );
-    uint h = p.x * 0x8da6b343u ^ p.y * 0xd8163841u ^ p.z * 0xcb1ab31fu;
-    h ^= h >> 16u; h *= 0x7feb352du; h ^= h >> 15u; h *= 0x846ca68bu; h ^= h >> 16u;
-    return vec3( uvec3( h, h >> 11u, h >> 22u ) & uvec3( 2047u, 2047u, 1023u ) ) / vec3( 1023.5, 1023.5, 511.5 ) - 1.0;
-  }
-
-  // Gradient noise: value in x, analytic gradient in yzw.
-  vec4 noised( vec3 x ) {
-    vec3 i = floor( x ), f = fract( x );
-    vec3 u = f * f * f * ( f * ( f * 6.0 - 15.0 ) + 10.0 ), du = 30.0 * f * f * ( f * ( f - 2.0 ) + 1.0 );
-    vec3 ga = lattice( i ), gb = lattice( i + vec3( 1, 0, 0 ) ), gc = lattice( i + vec3( 0, 1, 0 ) ), gd = lattice( i + vec3( 1, 1, 0 ) );
-    vec3 ge = lattice( i + vec3( 0, 0, 1 ) ), gf = lattice( i + vec3( 1, 0, 1 ) ), gg = lattice( i + vec3( 0, 1, 1 ) ), gh = lattice( i + vec3( 1, 1, 1 ) );
-    float va = dot( ga, f ), vb = dot( gb, f - vec3( 1, 0, 0 ) ), vc = dot( gc, f - vec3( 0, 1, 0 ) ), vd = dot( gd, f - vec3( 1, 1, 0 ) );
-    float ve = dot( ge, f - vec3( 0, 0, 1 ) ), vf = dot( gf, f - vec3( 1, 0, 1 ) ), vg = dot( gg, f - vec3( 0, 1, 1 ) ), vh = dot( gh, f - vec3( 1, 1, 1 ) );
-    float v = va + u.x * ( vb - va ) + u.y * ( vc - va ) + u.z * ( ve - va ) + u.x * u.y * ( va - vb - vc + vd )
-      + u.y * u.z * ( va - vc - ve + vg ) + u.z * u.x * ( va - vb - ve + vf ) + u.x * u.y * u.z * ( - va + vb + vc - vd + ve - vf - vg + vh );
-    vec3 g = ga + u.x * ( gb - ga ) + u.y * ( gc - ga ) + u.z * ( ge - ga ) + u.x * u.y * ( ga - gb - gc + gd )
-      + u.y * u.z * ( ga - gc - ge + gg ) + u.z * u.x * ( ga - gb - ge + gf ) + u.x * u.y * u.z * ( - ga + gb + gc - gd + ge - gf - gg + gh )
-      + du * ( vec3( vb - va, vc - va, ve - va ) + u.yzx * vec3( va - vb - vc + vd, va - vc - ve + vg, va - vb - ve + vf )
-      + u.zxy * vec3( va - vb - ve + vf, va - vb - vc + vd, va - vc - ve + vg ) + u.yzx * u.zxy * ( - va + vb + vc - vd + ve - vf - vg + vh ) );
-    return vec4( v, g );
-  }
+  // Gradient noise from the baked volume: value in x, gradient in yzw, in cells of the noise lattice.
+  uniform highp sampler3D uNoise;
+  // An explicit level: the fine octaves are read inside branches, where implicit derivatives are undefined.
+  vec4 noised( vec3 x ) { return textureLod( uNoise, x * ${(1 / SKIN.noise.period).toFixed(6)}, 0.0 ); }
 
   // The shadow map cuts off light at the terminator that the wrap carries past it, so the shadow fades out there
   // and the wrap alone darkens; its edge reddens as scattered light bleeds into it.

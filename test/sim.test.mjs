@@ -6,6 +6,7 @@ import { buildBody, buildTorso, buildHead, buildChokerRest, buildShirtRest, buil
 import { BODIES, BUILD, DEFAULTS, POSE, SKIN, MOTIONS, MOTION_BLEND, SHIRT, SHIRT_STYLES, SHIRT_COLORS, CHOKER, CHOKER_STYLES, CHOKER_COLORS, STOCKING_COLORS } from '../src/presets.js';
 import { makeStocking, makeSkirt, makeShirt, legSkin, toeSkins, armSkins, STOCKING_BAND, SKIRT_THICKNESS } from '../src/garments.js';
 import { colourCss } from '../src/colourway.js';
+import { noiseAt, noiseVolume } from '../src/noise.js';
 import { stepCloth, stepCloths, beginGrab, endGrab, computeStretch, nearest, resetCloth, concatSegs, gridIndex, computeNormals, STRIDE } from '../src/cloth.js';
 import { makeRig, track, applyPose, stepSoft, makePose, blendPose, feetOf, STAND, ROOT, BLEND } from '../src/pose.js';
 import { buildMotions, motionPose, makeDriver, want, drive, restart } from '../src/motion.js';
@@ -1680,6 +1681,26 @@ for (const id of Object.keys(BODIES)) {
   const all = [leg, arm, hand, torso].every(({ t }) => t.every((v) => v >= 0 && v <= 1));
   let crease = 0; for (let i = 2; i < torso.t.length; i += 3) crease = Math.max(crease, torso.t[i]);
   console.log(`${id}: knee front ${knee[0].toFixed(2)} back ${knee[1].toFixed(2)}, elbow back ${elbow[0].toFixed(2)} front ${elbow[1].toFixed(2)}, hand ${handFlush.toFixed(2)} upper arm ${upper.toFixed(2)}, thin fingertips ${thin[0].toFixed(2)} torso ${thin[1].toFixed(2)} (most ${crease.toFixed(2)}): ${need(all && crease < 0.3 && knee[0] > knee[1] + 0.2 && elbow[0] > elbow[1] + 0.2 && handFlush > upper + 0.2 && thin[0] > thin[1] + 0.2, `${id}: skin traits out of place`)}`);
+}
+
+// The baked skin noise: its gradient is the value's derivative, it tiles, and each texel holds the field at its centre.
+console.log('\n== skin noise volume');
+{
+  const { period, per } = SKIN.noise, { data, size } = noiseVolume(period, per), h = 1e-5, at = new Float64Array(4);
+  let slope = 0, seam = 0, texel = 0;
+  for (let k = 0; k < 500; k++) {
+    const p = [Math.sin(k * 12.9898) * 40, Math.sin(k * 78.233) * 40, Math.sin(k * 37.719) * 40], a = Array.from(noiseAt(...p, period));
+    for (let c = 0; c < 3; c++) {
+      const q = [...p], r = [...p]; q[c] += h; r[c] -= h;
+      slope = Math.max(slope, Math.abs((noiseAt(...q, period)[0] - noiseAt(...r, period)[0]) / (2 * h) - a[c + 1]));
+    }
+    const b = noiseAt(p[0] + period, p[1] - period, p[2] + 3 * period, period, at);
+    seam = Math.max(seam, ...a.map((v, c) => Math.abs(v - b[c])));
+    const i = k % size, j = (k * 7) % size, l = (k * 13) % size, o = ((l * size + j) * size + i) * 4;
+    noiseAt((i + 0.5) / per, (j + 0.5) / per, (l + 0.5) / per, period, at);
+    texel = Math.max(texel, ...[0, 1, 2, 3].map((c) => Math.abs(data[o + c] - at[c])));
+  }
+  console.log(`gradient error ${slope.toExponential(1)}, seam ${seam.toExponential(1)}, texel ${texel.toExponential(1)}: ${need(slope < 1e-6 && seam < 1e-9 && texel < 1e-6, 'skin noise volume is wrong')}`);
 }
 
 // Every colourway has a swatch, and a patterned stocking entry has what the shader needs.

@@ -69,6 +69,7 @@ A pose is a set of joint angles. One deformation field in `src/pose.js` moves th
 | `src/motion.js` | The walk and jump cycles and the state machine that blends between them. |
 | `src/nylon.js` | The sheer stocking shader. |
 | `src/colourway.js` | Solid, striped, block, and ombre colour patterns. |
+| `src/noise.js` | The tiling gradient-noise volume the skin's bump and blotch read. |
 | `test/sim.test.mjs` | The headless test. It asserts measured clearances, shapes, and timings. |
 | `scripts/bust-render.mjs` | A software renderer for checking the skin without a browser. |
 | `scripts/foot-render.mjs` | The same renderer pointed at the feet. |

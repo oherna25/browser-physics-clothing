@@ -365,6 +365,7 @@ export const SKIN = {
   wrap: 0.35, thinWrap: 0.5,
   relief: { freq: 45, slope: 0.02 }, crease: { freq: 420, slope: 0.05 }, pore: { freq: 1400, slope: 0.035 },
   blotch: 0.06,
+  noise: { period: 8, per: 8 }, // the baked noise volume: lattice cells before it tiles, texels per cell
   flush: {
     tint: [1.0, 0.74, 0.72], thin: 0.5,
     regions: [
