@@ -93,6 +93,8 @@ Read this section before you change code.
 3. The test has two timing limits: a frame median under 12 ms and a total under 170 s. A busy machine can fail them. Rerun on a quiet machine before you conclude that the code is slower.
 4. For a change you can see, check the page as well. A passing test does not prove that the picture is right.
 
+**Redraws.** The frame loop draws only when something it shows changed. The pose, a moving cloth, the camera, `apply`, any control in the panel, and a resize each mark the frame stale. A new way to change the picture from outside those paths must call `invalidate()` in `src/main.js`, or the page keeps showing the old frame.
+
 **Drive the page from the console.** `window.__sim` exposes these members:
 
 | Member | Use |

@@ -83,6 +83,16 @@ controls.maxDistance = 6;
 controls.maxPolarAngle = Math.PI * 0.55;
 controls.update();
 
+// The frame is drawn only when something it shows changed: the pose, a cloth, the view, a setting, or the size.
+let stale = true;
+const invalidate = () => { stale = true; };
+controls.addEventListener('change', invalidate);
+
+// Opaque draw order. three sorts opaque draws by renderOrder and then by material id, before depth, so without
+// this the backdrop and the skin, created first, shade every pixel the garments later cover. Garments stay at 0.
+// Stockings are transparent and sort in their own list.
+const DRAW = { skin: 1, backdrop: 2 };
+
 // --- Studio ---
 const LIGHT_DIR = new THREE.Vector3(...VIEW.light).normalize();
 const lightAt = (dir, { color, intensity }, distance = 4) => {
@@ -183,6 +193,7 @@ function cyclorama() {
   };
   const mesh = new THREE.Mesh(g, material);
   mesh.receiveShadow = true;
+  mesh.renderOrder = DRAW.backdrop;
   return mesh;
 }
 scene.add(cyclorama());
@@ -389,6 +400,7 @@ function skinMesh(rig, { pos, index, rings, segs, startPole = false }, by, part)
   shadeSkin(g);
   g.boundingSphere = BOUNDS; // fixed: the pose moves it
   const m = new THREE.Mesh(g, skinMat);
+  m.renderOrder = DRAW.skin;
   m.castShadow = m.receiveShadow = true;
   return m;
 }
@@ -502,6 +514,7 @@ const X_AXIS = new THREE.Vector3(1, 0, 0);
 // Static pose: skin, choker and cloth anchors move together; a cloth added since the last call catches up.
 function setPose(f, next) {
   if (!applyPose(f.rig, f.cloths, next)) return;
+  invalidate();
   for (const m of f.skin) shadeSkin(m.geometry);
   for (const m of f.clothMeshes) m.userData.dirty = true;
   poseChoker(f);
@@ -667,6 +680,7 @@ const optionButtons = {};
 const SLIDERS = ['thigh', 'glute', 'chest'];
 
 function rebuild() {
+  invalidate();
   stopGrab(); controls.enabled = true;
   if (fig) disposeFigure(fig);
   fig = buildFigure(BODIES[settings.body], { thigh: settings.thigh, glute: settings.glute, chest: settings.chest });
@@ -679,6 +693,7 @@ function rebuild() {
 const showSlider = (key) => { $(key + 'Val').textContent = `${Math.round($(key).value)}%`; };
 
 function apply(key, id) {
+  invalidate();
   if (SLIDERS.includes(key)) {
     if (!Number.isFinite(id)) return false;
     settings[key] = Math.min(Math.max(id, 0), 1);
@@ -768,7 +783,8 @@ function resize() {
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
 }
-addEventListener('resize', resize);
+addEventListener('resize', () => { resize(); invalidate(); });
+for (const type of ['input', 'change', 'click']) $('panel').addEventListener(type, invalidate, true);
 resize();
 
 // The view rises with the root, low-passed, so a jump stays framed without the camera bobbing every step.
@@ -777,11 +793,12 @@ function frameView(dt) {
   const next = followView(viewLift, fig.rig.pose.root.y, dt), d = next - viewLift;
   viewLift = next;
   camera.position.y += d; controls.target.y += d;
+  if (Math.abs(d) > 1e-6) invalidate(); // the follow decays forever; under a micron it is not worth a frame
 }
 
 let simMs = 0;
 function syncStepped(m, moved) {
-  if (moved || m.userData.dirty) syncMesh(m);
+  if (moved || m.userData.dirty) { syncMesh(m); invalidate(); }
   m.userData.dirty = false;
 }
 function advance(dt) {
@@ -830,7 +847,7 @@ function frame() {
   for (; acc >= STEP && steps < 3; steps++, acc -= STEP) advance(STEP);
   if (steps === 3) acc = 0;
   controls.update();
-  renderer.render(scene, camera);
+  if (stale) { renderer.render(scene, camera); stale = false; }
   if (raw > 0) fps += (1 / raw - fps) * 0.05;
   if (clock.elapsedTime - lastStats > 0.5) {
     lastStats = clock.elapsedTime;
