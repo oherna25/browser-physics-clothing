@@ -2,8 +2,8 @@
 // Run with: npm test
 
 import assert from 'node:assert/strict';
-import { buildBody, buildTorso, buildHead, buildChokerRest, buildShirtRest, buildSkirt, sweepLimb, ringRadii, SKIRT_OFFSET } from '../src/body.js';
-import { BODIES, BUILD, DEFAULTS, POSE, MOTIONS, MOTION_BLEND, SHIRT, SHIRT_STYLES, SHIRT_COLORS, CHOKER, CHOKER_STYLES, CHOKER_COLORS, STOCKING_COLORS } from '../src/presets.js';
+import { buildBody, buildTorso, buildHead, buildChokerRest, buildShirtRest, buildSkirt, sweepLimb, ringRadii, skinTraits, SKIRT_OFFSET } from '../src/body.js';
+import { BODIES, BUILD, DEFAULTS, POSE, SKIN, MOTIONS, MOTION_BLEND, SHIRT, SHIRT_STYLES, SHIRT_COLORS, CHOKER, CHOKER_STYLES, CHOKER_COLORS, STOCKING_COLORS } from '../src/presets.js';
 import { makeStocking, makeSkirt, makeShirt, legSkin, toeSkins, armSkins, STOCKING_BAND, SKIRT_THICKNESS } from '../src/garments.js';
 import { colourCss } from '../src/colourway.js';
 import { stepCloth, stepCloths, beginGrab, endGrab, computeStretch, nearest, resetCloth, concatSegs, gridIndex, computeNormals, STRIDE } from '../src/cloth.js';
@@ -1656,6 +1656,30 @@ for (const [id, shape] of Object.entries(BODIES)) for (const build of [0, 1]) {
     alone.cloths.forEach((c, k) => { const p = paired.cloths[k].pos; for (let i = 0; i < p.length; i++) differ += !Object.is(p[i], c.pos[i]); });
   }
   console.log(`walk then jump, 120 frames, 2 pairs: ${stepped} pair steps moved both cloths, ${differ} coordinates differ from lone stepping: ${need(differ === 0 && stepped === 240, `paired stepping: ${differ} differ, ${stepped} of 240 stepped`)}`);
+}
+
+// Skin traits: the kneecap and the point of the elbow flush, not their backs; the hand flushes, the upper arm does
+// not; the fingertips are thinner than the torso, and no crease of the fullest chest reads as thin.
+console.log('\n== skin traits');
+for (const id of Object.keys(BODIES)) {
+  const body = bodyOf(BODIES[id], 0, 0, 1), { joints } = body;
+  const traits = (g, part, limb) => ({ g, t: skinTraits(g.pos, g.index ?? gridIndex(g.rings, g.segs, true, true, g.startPole ?? false), part, joints, limb, SKIN) });
+  const mean = ({ g, t }, k, keep) => {
+    let sum = 0, n = 0;
+    for (let i = 0; i < t.length / 3; i++) if (keep(g.pos[i * 3], g.pos[i * 3 + 1], g.pos[i * 3 + 2])) { sum += t[i * 3 + k]; n++; }
+    return n ? sum / n : NaN;
+  };
+  const leg = traits(legSkin(body.legs[0]), 'leg', body.legs[0]), [arm, hand] = armSkins(body.arms[0]).map((g, k) => traits(g, k ? 'hand' : 'arm', body.arms[0]));
+  const torso = traits(buildTorso(body), 'torso', null), near = (y, h) => (x, py) => Math.abs(py - y) < h;
+  const [ky, kz] = joints.knee, [ey, ez] = joints.elbow;
+  const knee = [mean(leg, 0, (x, y, z) => Math.abs(y - ky) < 0.02 && z > kz), mean(leg, 0, (x, y, z) => Math.abs(y - ky) < 0.02 && z < kz)];
+  const elbow = [mean(arm, 0, (x, y, z) => Math.abs(y - ey) < 0.02 && z < ez), mean(arm, 0, (x, y, z) => Math.abs(y - ey) < 0.02 && z > ez)];
+  const handFlush = mean(hand, 0, () => true), upper = mean(arm, 0, near(joints.shoulder[0] - 0.08, 0.03));
+  let low = Infinity; for (let o = 1; o < hand.g.pos.length; o += 3) low = Math.min(low, hand.g.pos[o]);
+  const thin = [mean(hand, 2, (x, y) => y < low + 0.03), mean(torso, 2, () => true)];
+  const all = [leg, arm, hand, torso].every(({ t }) => t.every((v) => v >= 0 && v <= 1));
+  let crease = 0; for (let i = 2; i < torso.t.length; i += 3) crease = Math.max(crease, torso.t[i]);
+  console.log(`${id}: knee front ${knee[0].toFixed(2)} back ${knee[1].toFixed(2)}, elbow back ${elbow[0].toFixed(2)} front ${elbow[1].toFixed(2)}, hand ${handFlush.toFixed(2)} upper arm ${upper.toFixed(2)}, thin fingertips ${thin[0].toFixed(2)} torso ${thin[1].toFixed(2)} (most ${crease.toFixed(2)}): ${need(all && crease < 0.3 && knee[0] > knee[1] + 0.2 && elbow[0] > elbow[1] + 0.2 && handFlush > upper + 0.2 && thin[0] > thin[1] + 0.2, `${id}: skin traits out of place`)}`);
 }
 
 // Every colourway has a swatch, and a patterned stocking entry has what the shader needs.
