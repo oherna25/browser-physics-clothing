@@ -8,7 +8,8 @@ import { makeRig, track, follow, poseSet, angleOf, applyPose, stepSoft, makePose
 import { nylonMaterial, setNylonColour } from './nylon.js';
 import { colourCss, patternTexture, repaint } from './colourway.js';
 import { noiseVolume } from './noise.js';
-import { BODIES, SKIN_TONES, STOCKING_COLORS, SKIRT_COLORS, SHIRT_STYLES, SHIRT_COLORS, CHOKER_STYLES, CHOKER_COLORS, CHOKER, DEFAULTS, SKIN, POSE, MOTIONS, VIEW } from './presets.js';
+import { planSteps } from './loop.js';
+import { BODIES, SKIN_TONES, STOCKING_COLORS, SKIRT_COLORS, SHIRT_STYLES, SHIRT_COLORS, CHOKER_STYLES, CHOKER_COLORS, CHOKER, DEFAULTS, SKIN, POSE, MOTIONS, VIEW, LOOP } from './presets.js';
 
 const canvas = document.getElementById('view');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -850,16 +851,15 @@ function advance(dt) {
 }
 
 const clock = new THREE.Clock();
-const STEP = 1 / 60;
+const STEP = LOOP.step;
 let fps = 60, lastStats = 0, acc = 0;
 function frame() {
   const raw = clock.getDelta();
-  // Fixed 60 Hz physics steps: the solver always sees the same dt, and a
-  // background tab can never cause more than a few catch-up steps.
-  acc += Math.min(raw, 0.1);
-  let steps = 0;
-  for (; acc >= STEP && steps < 3; steps++, acc -= STEP) advance(STEP);
-  if (steps === 3) acc = 0;
+  // Fixed 60 Hz physics steps: the solver always sees the same dt. A slow device gets no catch-up steps, so it
+  // slows the motion instead of dropping frames.
+  const plan = planSteps(acc, raw, simMs);
+  acc = plan.acc;
+  for (let s = 0; s < plan.steps; s++) advance(STEP);
   controls.update();
   if (stale) { renderer.render(scene, camera); stale = false; }
   if (raw > 0) fps += (1 / raw - fps) * 0.05;

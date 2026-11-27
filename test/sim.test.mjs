@@ -3,10 +3,11 @@
 
 import assert from 'node:assert/strict';
 import { buildBody, buildTorso, buildHead, buildChokerRest, buildShirtRest, buildSkirt, sweepLimb, ringRadii, skinTraits, SKIRT_OFFSET } from '../src/body.js';
-import { BODIES, BUILD, DEFAULTS, POSE, SKIN, MOTIONS, MOTION_BLEND, SHIRT, SHIRT_STYLES, SHIRT_COLORS, CHOKER, CHOKER_STYLES, CHOKER_COLORS, STOCKING_COLORS } from '../src/presets.js';
+import { LOOP, BODIES, BUILD, DEFAULTS, POSE, SKIN, MOTIONS, MOTION_BLEND, SHIRT, SHIRT_STYLES, SHIRT_COLORS, CHOKER, CHOKER_STYLES, CHOKER_COLORS, STOCKING_COLORS } from '../src/presets.js';
 import { makeStocking, makeSkirt, makeShirt, legSkin, toeSkins, armSkins, STOCKING_BAND, SKIRT_THICKNESS } from '../src/garments.js';
 import { colourCss } from '../src/colourway.js';
 import { noiseAt, noiseVolume } from '../src/noise.js';
+import { planSteps } from '../src/loop.js';
 import { stepCloth, stepCloths, beginGrab, endGrab, computeStretch, nearest, resetCloth, concatSegs, gridIndex, computeNormals, STRIDE } from '../src/cloth.js';
 import { makeRig, track, applyPose, stepSoft, makePose, blendPose, feetOf, STAND, ROOT, BLEND } from '../src/pose.js';
 import { buildMotions, motionPose, makeDriver, want, drive, restart } from '../src/motion.js';
@@ -1701,6 +1702,32 @@ console.log('\n== skin noise volume');
     texel = Math.max(texel, ...[0, 1, 2, 3].map((c) => Math.abs(data[o + c] - at[c])));
   }
   console.log(`gradient error ${slope.toExponential(1)}, seam ${seam.toExponential(1)}, texel ${texel.toExponential(1)}: ${need(slope < 1e-6 && seam < 1e-9 && texel < 1e-6, 'skin noise volume is wrong')}`);
+}
+
+// The frame loop on a 60 Hz display, with a physics step of `stepMs` and a draw of `drawMs` of CPU each frame. A
+// frame starts on the first vsync after the last one's work ends, give or take a millisecond of timer jitter; the
+// step cost is low-passed as the page does. Returns frames per second and the motion's speed against real time.
+function frameLoop(stepMs, drawMs, frames = 900) {
+  const vsync = 1000 / 60;
+  let acc = 0, est = 0, t = 0, last = 0, sim = 0, t0 = 0, sim0 = 0;
+  for (let f = 0; f < frames; f++) {
+    if (f === 120) { t0 = t; sim0 = sim; }
+    const jitter = Math.sin(f * 2.3) * 1, raw = Math.max(t + jitter - last, 0) / 1000;
+    last = t + jitter;
+    const plan = planSteps(acc, raw, est);
+    acc = plan.acc;
+    for (let s = 0; s < plan.steps; s++) est += (stepMs - est) * 0.1;
+    sim += plan.steps * LOOP.step * 1000;
+    t += Math.max(1, Math.ceil((plan.steps * stepMs + drawMs) / vsync)) * vsync;
+  }
+  return { fps: (frames - 120) / ((t - t0) / 1000), speed: (sim - sim0) / (t - t0) };
+}
+{
+  const fast = frameLoop(8, 3), mid = frameLoop(20, 7), slow = frameLoop(48, 18), idle = frameLoop(0.3, 1);
+  const one = (o) => `${o.fps.toFixed(1)} fps at ${o.speed.toFixed(2)}x`;
+  // A sleeping figure costs little a step, so a long frame is caught up in full.
+  const hitch = planSteps(0, 0.05, 0.3);
+  console.log(`frame loop: 8 ms step ${one(fast)}: ${need(fast.fps > 59 && fast.speed > 0.99, `frame loop 8 ms ${one(fast)}`)}; 20 ms step ${one(mid)}: ${need(mid.fps > 29, `frame loop 20 ms ${one(mid)}`)}; 48 ms step ${one(slow)}: ${need(slow.fps > 14, `frame loop 48 ms ${one(slow)}`)}; idle ${one(idle)}: ${need(idle.fps > 59 && idle.speed > 0.99, `frame loop idle ${one(idle)}`)}; a 50 ms frame idle runs ${hitch.steps} steps: ${need(hitch.steps === 3, `idle hitch ${hitch.steps} steps`)}`);
 }
 
 // Every colourway has a swatch, and a patterned stocking entry has what the shader needs.
