@@ -2,10 +2,12 @@
 // Run with: npm test
 
 import assert from 'node:assert/strict';
-import { buildBody, buildTorso, buildHead, buildChokerRest, buildShirtRest, buildSkirt, sweepLimb, ringRadii, SKIRT_OFFSET } from '../src/body.js';
-import { BODIES, BUILD, DEFAULTS, POSE, MOTIONS, MOTION_BLEND, SHIRT, SHIRT_STYLES, SHIRT_COLORS, CHOKER, CHOKER_STYLES, CHOKER_COLORS, STOCKING_COLORS } from '../src/presets.js';
+import { buildBody, buildTorso, buildHead, buildChokerRest, buildShirtRest, buildSkirt, sweepLimb, ringRadii, skinTraits, SKIRT_OFFSET } from '../src/body.js';
+import { LOOP, BODIES, BUILD, DEFAULTS, POSE, SKIN, MOTIONS, MOTION_BLEND, SHIRT, SHIRT_STYLES, SHIRT_COLORS, CHOKER, CHOKER_STYLES, CHOKER_COLORS, STOCKING_COLORS } from '../src/presets.js';
 import { makeStocking, makeSkirt, makeShirt, legSkin, toeSkins, armSkins, STOCKING_BAND, SKIRT_THICKNESS } from '../src/garments.js';
 import { colourCss } from '../src/colourway.js';
+import { noiseAt, noiseVolume } from '../src/noise.js';
+import { planSteps } from '../src/loop.js';
 import { stepCloth, stepCloths, beginGrab, endGrab, computeStretch, nearest, resetCloth, concatSegs, gridIndex, computeNormals, STRIDE } from '../src/cloth.js';
 import { makeRig, track, applyPose, stepSoft, makePose, blendPose, feetOf, STAND, ROOT, BLEND } from '../src/pose.js';
 import { buildMotions, motionPose, makeDriver, want, drive, restart } from '../src/motion.js';
@@ -1658,6 +1660,76 @@ for (const [id, shape] of Object.entries(BODIES)) for (const build of [0, 1]) {
   console.log(`walk then jump, 120 frames, 2 pairs: ${stepped} pair steps moved both cloths, ${differ} coordinates differ from lone stepping: ${need(differ === 0 && stepped === 240, `paired stepping: ${differ} differ, ${stepped} of 240 stepped`)}`);
 }
 
+// Skin traits: the kneecap and the point of the elbow flush, not their backs; the hand flushes, the upper arm does
+// not; the fingertips are thinner than the torso, and no crease of the fullest chest reads as thin.
+console.log('\n== skin traits');
+for (const id of Object.keys(BODIES)) {
+  const body = bodyOf(BODIES[id], 0, 0, 1), { joints } = body;
+  const traits = (g, part, limb) => ({ g, t: skinTraits(g.pos, g.index ?? gridIndex(g.rings, g.segs, true, true, g.startPole ?? false), part, joints, limb, SKIN) });
+  const mean = ({ g, t }, k, keep) => {
+    let sum = 0, n = 0;
+    for (let i = 0; i < t.length / 3; i++) if (keep(g.pos[i * 3], g.pos[i * 3 + 1], g.pos[i * 3 + 2])) { sum += t[i * 3 + k]; n++; }
+    return n ? sum / n : NaN;
+  };
+  const leg = traits(legSkin(body.legs[0]), 'leg', body.legs[0]), [arm, hand] = armSkins(body.arms[0]).map((g, k) => traits(g, k ? 'hand' : 'arm', body.arms[0]));
+  const torso = traits(buildTorso(body), 'torso', null), near = (y, h) => (x, py) => Math.abs(py - y) < h;
+  const [ky, kz] = joints.knee, [ey, ez] = joints.elbow;
+  const knee = [mean(leg, 0, (x, y, z) => Math.abs(y - ky) < 0.02 && z > kz), mean(leg, 0, (x, y, z) => Math.abs(y - ky) < 0.02 && z < kz)];
+  const elbow = [mean(arm, 0, (x, y, z) => Math.abs(y - ey) < 0.02 && z < ez), mean(arm, 0, (x, y, z) => Math.abs(y - ey) < 0.02 && z > ez)];
+  const handFlush = mean(hand, 0, () => true), upper = mean(arm, 0, near(joints.shoulder[0] - 0.08, 0.03));
+  let low = Infinity; for (let o = 1; o < hand.g.pos.length; o += 3) low = Math.min(low, hand.g.pos[o]);
+  const thin = [mean(hand, 2, (x, y) => y < low + 0.03), mean(torso, 2, () => true)];
+  const all = [leg, arm, hand, torso].every(({ t }) => t.every((v) => v >= 0 && v <= 1));
+  let crease = 0; for (let i = 2; i < torso.t.length; i += 3) crease = Math.max(crease, torso.t[i]);
+  console.log(`${id}: knee front ${knee[0].toFixed(2)} back ${knee[1].toFixed(2)}, elbow back ${elbow[0].toFixed(2)} front ${elbow[1].toFixed(2)}, hand ${handFlush.toFixed(2)} upper arm ${upper.toFixed(2)}, thin fingertips ${thin[0].toFixed(2)} torso ${thin[1].toFixed(2)} (most ${crease.toFixed(2)}): ${need(all && crease < 0.3 && knee[0] > knee[1] + 0.2 && elbow[0] > elbow[1] + 0.2 && handFlush > upper + 0.2 && thin[0] > thin[1] + 0.2, `${id}: skin traits out of place`)}`);
+}
+
+// The baked skin noise: its gradient is the value's derivative, it tiles, and each texel holds the field at its centre.
+console.log('\n== skin noise volume');
+{
+  const { period, per } = SKIN.noise, { data, size } = noiseVolume(period, per), h = 1e-5, at = new Float64Array(4);
+  let slope = 0, seam = 0, texel = 0;
+  for (let k = 0; k < 500; k++) {
+    const p = [Math.sin(k * 12.9898) * 40, Math.sin(k * 78.233) * 40, Math.sin(k * 37.719) * 40], a = Array.from(noiseAt(...p, period));
+    for (let c = 0; c < 3; c++) {
+      const q = [...p], r = [...p]; q[c] += h; r[c] -= h;
+      slope = Math.max(slope, Math.abs((noiseAt(...q, period)[0] - noiseAt(...r, period)[0]) / (2 * h) - a[c + 1]));
+    }
+    const b = noiseAt(p[0] + period, p[1] - period, p[2] + 3 * period, period, at);
+    seam = Math.max(seam, ...a.map((v, c) => Math.abs(v - b[c])));
+    const i = k % size, j = (k * 7) % size, l = (k * 13) % size, o = ((l * size + j) * size + i) * 4;
+    noiseAt((i + 0.5) / per, (j + 0.5) / per, (l + 0.5) / per, period, at);
+    texel = Math.max(texel, ...[0, 1, 2, 3].map((c) => Math.abs(data[o + c] - at[c])));
+  }
+  console.log(`gradient error ${slope.toExponential(1)}, seam ${seam.toExponential(1)}, texel ${texel.toExponential(1)}: ${need(slope < 1e-6 && seam < 1e-9 && texel < 1e-6, 'skin noise volume is wrong')}`);
+}
+
+// The frame loop on a 60 Hz display, with a physics step of `stepMs` and a draw of `drawMs` of CPU each frame. A
+// frame starts on the first vsync after the last one's work ends, give or take a millisecond of timer jitter; the
+// step cost is low-passed as the page does. Returns frames per second and the motion's speed against real time.
+function frameLoop(stepMs, drawMs, frames = 900) {
+  const vsync = 1000 / 60;
+  let acc = 0, est = 0, t = 0, last = 0, sim = 0, t0 = 0, sim0 = 0;
+  for (let f = 0; f < frames; f++) {
+    if (f === 120) { t0 = t; sim0 = sim; }
+    const jitter = Math.sin(f * 2.3) * 1, raw = Math.max(t + jitter - last, 0) / 1000;
+    last = t + jitter;
+    const plan = planSteps(acc, raw, est);
+    acc = plan.acc;
+    for (let s = 0; s < plan.steps; s++) est += (stepMs - est) * 0.1;
+    sim += plan.steps * LOOP.step * 1000;
+    t += Math.max(1, Math.ceil((plan.steps * stepMs + drawMs) / vsync)) * vsync;
+  }
+  return { fps: (frames - 120) / ((t - t0) / 1000), speed: (sim - sim0) / (t - t0) };
+}
+{
+  const fast = frameLoop(8, 3), mid = frameLoop(20, 7), slow = frameLoop(48, 18), idle = frameLoop(0.3, 1);
+  const one = (o) => `${o.fps.toFixed(1)} fps at ${o.speed.toFixed(2)}x`;
+  // A sleeping figure costs little a step, so a long frame is caught up in full.
+  const hitch = planSteps(0, 0.05, 0.3);
+  console.log(`frame loop: 8 ms step ${one(fast)}: ${need(fast.fps > 59 && fast.speed > 0.99, `frame loop 8 ms ${one(fast)}`)}; 20 ms step ${one(mid)}: ${need(mid.fps > 29, `frame loop 20 ms ${one(mid)}`)}; 48 ms step ${one(slow)}: ${need(slow.fps > 14, `frame loop 48 ms ${one(slow)}`)}; idle ${one(idle)}: ${need(idle.fps > 59 && idle.speed > 0.99, `frame loop idle ${one(idle)}`)}; a 50 ms frame idle runs ${hitch.steps} steps: ${need(hitch.steps === 3, `idle hitch ${hitch.steps} steps`)}`);
+}
+
 // Every colourway has a swatch, and a patterned stocking entry has what the shader needs.
 for (const e of [...SHIRT_COLORS, ...CHOKER_COLORS, ...STOCKING_COLORS]) assert.ok(colourCss(e), `${e.id}: no swatch`);
 assert.ok(SHIRT_COLORS.filter((e) => e.pattern === 'solid').length >= 5 && SHIRT_COLORS.filter((e) => e.pattern !== 'solid').length >= 5);
@@ -1666,6 +1738,6 @@ assert.ok(STOCKING_COLORS.filter((e) => e.pattern === 'stripes' && e.sheen).leng
 
 for (const [id, ok] of squeezeOk) assert.ok(ok, `${id}: squeeze does not grow with thickness`);
 const total = performance.now() / 1000;
-console.log(`\ntotal ${total.toFixed(1)} s: ${need(total < 170, `8 npm test took ${total.toFixed(1)} s`)}`);
+console.log(`\ntotal ${total.toFixed(1)} s: ${need(total < 200, `8 npm test took ${total.toFixed(1)} s`)}`);
 assert.equal(failed.length, 0, `criteria failed:\n  ${failed.join('\n  ')}`);
 console.log('ok');

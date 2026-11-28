@@ -1,17 +1,21 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { buildBody, buildTorso, buildHead, buildChokerRest, neckPoint } from './body.js';
+import { buildBody, buildTorso, buildHead, buildChokerRest, neckPoint, skinTraits } from './body.js';
 import { makeStocking, makeSkirt, makeShirt, legSkin, toeSkins, armSkins, STOCKING_BAND } from './garments.js';
 import { stepCloth, stepCloths, beginGrab, endGrab, resetCloth, computeStretch, computeNormals, gridIndex, STRIDE } from './cloth.js';
 import { buildMotions, makeDriver, want, restart, drive, followView } from './motion.js';
 import { makeRig, track, follow, poseSet, angleOf, applyPose, stepSoft, makePose, blendPose, STAND, ROOT, BLEND } from './pose.js';
 import { nylonMaterial, setNylonColour } from './nylon.js';
 import { colourCss, patternTexture, repaint } from './colourway.js';
-import { BODIES, SKIN_TONES, STOCKING_COLORS, SKIRT_COLORS, SHIRT_STYLES, SHIRT_COLORS, CHOKER_STYLES, CHOKER_COLORS, CHOKER, DEFAULTS, POSE, MOTIONS, VIEW } from './presets.js';
+import { noiseVolume } from './noise.js';
+import { planSteps } from './loop.js';
+import { BODIES, SKIN_TONES, STOCKING_COLORS, SKIRT_COLORS, SHIRT_STYLES, SHIRT_COLORS, CHOKER_STYLES, CHOKER_COLORS, CHOKER, DEFAULTS, SKIN, POSE, MOTIONS, VIEW, LOOP } from './presets.js';
 
 const canvas = document.getElementById('view');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+// Touch screens are phones and tablets: their GPUs fill fewer pixels per frame, so they draw at a lower ratio.
+const touchScreen = matchMedia('(pointer: coarse)').matches;
+renderer.setPixelRatio(Math.min(devicePixelRatio, touchScreen ? VIEW.pixelRatio.touch : VIEW.pixelRatio.max));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.NeutralToneMapping; // keeps skin hue where ACES shifts it and AgX greys it
@@ -82,6 +86,16 @@ controls.minDistance = 0.4;
 controls.maxDistance = 6;
 controls.maxPolarAngle = Math.PI * 0.55;
 controls.update();
+
+// The frame is drawn only when something it shows changed: the pose, a cloth, the view, a setting, or the size.
+let stale = true;
+const invalidate = () => { stale = true; };
+controls.addEventListener('change', invalidate);
+
+// Opaque draw order. three sorts opaque draws by renderOrder and then by material id, before depth, so without
+// this the backdrop and the skin, created first, shade every pixel the garments later cover. Garments stay at 0.
+// Stockings are transparent and sort in their own list.
+const DRAW = { skin: 1, backdrop: 2 };
 
 // --- Studio ---
 const LIGHT_DIR = new THREE.Vector3(...VIEW.light).normalize();
@@ -183,58 +197,47 @@ function cyclorama() {
   };
   const mesh = new THREE.Mesh(g, material);
   mesh.receiveShadow = true;
+  mesh.renderOrder = DRAW.backdrop;
   return mesh;
 }
 scene.add(cyclorama());
 
 // --- Materials ---
-// Skin. Diffuse light wraps past the terminator per channel (red furthest, from the tone's scatter colour) and the
-// key's shadow edge reddens, standing in for subsurface scattering. A clearcoat lobe adds the sharper oily sheen
-// over the broad base lobe. Bump, roughness and colour noise are keyed on the rest position (aRest), so they stay
-// on the skin as it poses; the fine octaves fade out before they go below a pixel and would sparkle.
-const SKIN = {
-  roughness: 0.58, ior: 1.4, coat: 0.14, coatRoughness: 0.36,
-  wrap: 0.35, // scatter colour (linear) times this is each channel's wrap
-  // Bump octaves in cycles per metre: soft unevenness that breaks up the highlight, a crease mesh, and pores.
-  relief: { freq: 45, slope: 0.02 }, crease: { freq: 420, slope: 0.05 }, pore: { freq: 1400, slope: 0.035 },
-  blotch: 0.06, // how far the relief noise pushes the colour toward red and back
-};
-const skinUniforms = { uWrap: { value: new THREE.Vector3() } };
+// Skin. The wrap and the reddened shadow edge stand in for subsurface scattering, stronger on thin parts, which also
+// glow when lit from behind. Bump, roughness and colour noise are keyed on the rest position (aRest), so they stay on
+// the skin as it poses; the fine octaves fade out before they go below a pixel and would sparkle. aSkin carries the
+// baked flush, pale and thin traits from skinTraits.
+// The skin's bump and blotch noise, baked once into a tiling volume; linear filtering between texel centres reads it.
+function noiseTexture({ period, per }) {
+  const { data, size } = noiseVolume(period, per), half = new Uint16Array(data.length);
+  for (let i = 0; i < data.length; i++) half[i] = THREE.DataUtils.toHalfFloat(data[i]);
+  const tex = new THREE.Data3DTexture(half, size, size, size);
+  tex.type = THREE.HalfFloatType;
+  tex.format = THREE.RGBAFormat;
+  tex.minFilter = tex.magFilter = THREE.LinearFilter;
+  tex.wrapS = tex.wrapT = tex.wrapR = THREE.RepeatWrapping;
+  tex.unpackAlignment = 1;
+  tex.needsUpdate = true;
+  return tex;
+}
+const skinUniforms = { uWrap: { value: new THREE.Vector3() }, uNoise: { value: noiseTexture(SKIN.noise) } };
+const v3 = (a) => `vec3( ${a.map((x) => x.toFixed(4)).join(', ')} )`;
 const SKIN_GLSL = /* glsl */ `
   uniform vec3 uWrap;
   varying vec3 vRest;
-  vec3 skinBaseNormal;
+  varying vec3 vSkin;
+  vec3 skinBaseNormal, skinWrap;
 
-  // One integer hash per lattice point, its bits split into a gradient.
-  vec3 lattice( vec3 i ) {
-    uvec3 p = uvec3( ivec3( i ) );
-    uint h = p.x * 0x8da6b343u ^ p.y * 0xd8163841u ^ p.z * 0xcb1ab31fu;
-    h ^= h >> 16u; h *= 0x7feb352du; h ^= h >> 15u; h *= 0x846ca68bu; h ^= h >> 16u;
-    return vec3( uvec3( h, h >> 11u, h >> 22u ) & uvec3( 2047u, 2047u, 1023u ) ) / vec3( 1023.5, 1023.5, 511.5 ) - 1.0;
-  }
-
-  // Gradient noise: value in x, analytic gradient in yzw.
-  vec4 noised( vec3 x ) {
-    vec3 i = floor( x ), f = fract( x );
-    vec3 u = f * f * f * ( f * ( f * 6.0 - 15.0 ) + 10.0 ), du = 30.0 * f * f * ( f * ( f - 2.0 ) + 1.0 );
-    vec3 ga = lattice( i ), gb = lattice( i + vec3( 1, 0, 0 ) ), gc = lattice( i + vec3( 0, 1, 0 ) ), gd = lattice( i + vec3( 1, 1, 0 ) );
-    vec3 ge = lattice( i + vec3( 0, 0, 1 ) ), gf = lattice( i + vec3( 1, 0, 1 ) ), gg = lattice( i + vec3( 0, 1, 1 ) ), gh = lattice( i + vec3( 1, 1, 1 ) );
-    float va = dot( ga, f ), vb = dot( gb, f - vec3( 1, 0, 0 ) ), vc = dot( gc, f - vec3( 0, 1, 0 ) ), vd = dot( gd, f - vec3( 1, 1, 0 ) );
-    float ve = dot( ge, f - vec3( 0, 0, 1 ) ), vf = dot( gf, f - vec3( 1, 0, 1 ) ), vg = dot( gg, f - vec3( 0, 1, 1 ) ), vh = dot( gh, f - vec3( 1, 1, 1 ) );
-    float v = va + u.x * ( vb - va ) + u.y * ( vc - va ) + u.z * ( ve - va ) + u.x * u.y * ( va - vb - vc + vd )
-      + u.y * u.z * ( va - vc - ve + vg ) + u.z * u.x * ( va - vb - ve + vf ) + u.x * u.y * u.z * ( - va + vb + vc - vd + ve - vf - vg + vh );
-    vec3 g = ga + u.x * ( gb - ga ) + u.y * ( gc - ga ) + u.z * ( ge - ga ) + u.x * u.y * ( ga - gb - gc + gd )
-      + u.y * u.z * ( ga - gc - ge + gg ) + u.z * u.x * ( ga - gb - ge + gf ) + u.x * u.y * u.z * ( - ga + gb + gc - gd + ge - gf - gg + gh )
-      + du * ( vec3( vb - va, vc - va, ve - va ) + u.yzx * vec3( va - vb - vc + vd, va - vc - ve + vg, va - vb - ve + vf )
-      + u.zxy * vec3( va - vb - ve + vf, va - vb - vc + vd, va - vc - ve + vg ) + u.yzx * u.zxy * ( - va + vb + vc - vd + ve - vf - vg + vh ) );
-    return vec4( v, g );
-  }
+  // Gradient noise from the baked volume: value in x, gradient in yzw, in cells of the noise lattice.
+  uniform highp sampler3D uNoise;
+  // An explicit level: the fine octaves are read inside branches, where implicit derivatives are undefined.
+  vec4 noised( vec3 x ) { return textureLod( uNoise, x * ${(1 / SKIN.noise.period).toFixed(6)}, 0.0 ); }
 
   // The shadow map cuts off light at the terminator that the wrap carries past it, so the shadow fades out there
   // and the wrap alone darkens; its edge reddens as scattered light bleeds into it.
   vec3 skinShadow( float s, vec3 l ) {
     s = mix( 1.0, s, smoothstep( - 0.15, 0.1, dot( skinBaseNormal, l ) ) );
-    return pow( vec3( s ), 1.0 / ( 1.0 + 2.0 * uWrap ) );
+    return pow( vec3( s ), 1.0 / ( 1.0 + 2.0 * skinWrap ) );
   }`;
 
 const SKIN_DIRECT = /* glsl */ `
@@ -247,8 +250,11 @@ const SKIN_DIRECT = /* glsl */ `
     reflectedLight.directSpecular += irradiance * BRDF_GGX( directLight.direction, geometryViewDir, geometryNormal, material );
     // Scattered light ignores the pore bump, so diffuse takes the smooth normal.
     float nl = dot( skinBaseNormal, directLight.direction );
-    vec3 wrap = pow( saturate( ( nl + uWrap ) / ( 1.0 + uWrap ) ), 1.0 + uWrap );
+    vec3 wrap = pow( saturate( ( nl + skinWrap ) / ( 1.0 + skinWrap ) ), 1.0 + skinWrap );
     reflectedLight.directDiffuse += wrap * directLight.color * BRDF_Lambert( material.diffuseColor );
+    vec3 back = normalize( directLight.direction + skinBaseNormal * TRANS_DISTORTION );
+    float through = pow( saturate( dot( geometryViewDir, - back ) ), TRANS_POWER ) * TRANS_SCALE * vSkin.z;
+    reflectedLight.directDiffuse += through * directLight.color * uWrap / max( uWrap.r, 1e-3 ) * BRDF_Lambert( material.diffuseColor );
   }
   #undef RE_Direct
   #define RE_Direct RE_Direct_Skin`;
@@ -258,11 +264,12 @@ const skinMat = new THREE.MeshPhysicalMaterial({
 });
 skinMat.onBeforeCompile = (shader) => {
   Object.assign(shader.uniforms, skinUniforms);
-  const { relief, crease, pore, blotch } = SKIN, f = (x) => x.toFixed(4);
-  shader.vertexShader = patch(shader.vertexShader, '#include <common>', '#include <common>\nattribute vec3 aRest;\nvarying vec3 vRest;');
-  shader.vertexShader = patch(shader.vertexShader, '#include <begin_vertex>', '#include <begin_vertex>\nvRest = aRest;');
+  const { relief, crease, pore, blotch, flush, pale, translucency: tr } = SKIN, f = (x) => x.toFixed(4);
+  shader.vertexShader = patch(shader.vertexShader, '#include <common>', '#include <common>\nattribute vec3 aRest, aSkin;\nvarying vec3 vRest, vSkin;');
+  shader.vertexShader = patch(shader.vertexShader, '#include <begin_vertex>', '#include <begin_vertex>\nvRest = aRest; vSkin = aSkin;');
   let fs = shader.fragmentShader;
-  fs = patch(fs, '#include <common>', `#include <common>\n${SKIN_GLSL}`);
+  const defs = `#define TRANS_POWER ${f(tr.power)}\n#define TRANS_SCALE ${f(tr.scale)}\n#define TRANS_DISTORTION ${f(tr.distortion)}\n`;
+  fs = patch(fs, '#include <common>', `#include <common>\n${defs}${SKIN_GLSL}`);
   fs = patch(fs, '#include <lights_physical_pars_fragment>', `#include <lights_physical_pars_fragment>\n${SKIN_DIRECT}`);
   fs = patch(fs, '#include <color_fragment>', `#include <color_fragment>
     vec3 restDx = dFdx( vRest ), restDy = dFdy( vRest );
@@ -272,7 +279,9 @@ skinMat.onBeforeCompile = (shader) => {
     vec4 reliefN = noised( vRest * ${f(relief.freq)} ), creaseN = vec4( 0.0 ), poreN = vec4( 0.0 );
     if ( creaseFade > 0.0 ) creaseN = noised( vRest * ${f(crease.freq)} );
     if ( poreFade > 0.0 ) poreN = noised( vRest * ${f(pore.freq)} );
-    diffuseColor.rgb *= 1.0 + ${f(blotch)} * reliefN.x * vec3( 1.0, - 0.35, - 0.5 );`);
+    diffuseColor.rgb *= 1.0 + ${f(blotch)} * reliefN.x * vec3( 1.0, - 0.35, - 0.5 );
+    diffuseColor.rgb = mix( diffuseColor.rgb, pow( diffuseColor.rgb, vec3( ${f(pale.gamma)} ) ), vSkin.y ) * mix( vec3( 1.0 ), ${v3(flush.tint)}, vSkin.x );
+    skinWrap = uWrap * ( 1.0 + ${f(SKIN.thinWrap)} * vSkin.z / max( ${f(SKIN.wrap)}, 1e-3 ) );`);
   fs = patch(fs, '#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
     roughnessFactor = clamp( roughnessFactor * ( 1.0 + 0.12 * poreN.x * poreFade - 0.08 * abs( creaseN.x ) * creaseFade ), 0.05, 1.0 );`);
   // Bump from the rest-space height gradient, carried to the posed surface by screen derivatives (Mikkelsen).
@@ -378,15 +387,17 @@ function shadeSkin(g) {
 }
 
 // Skin follows the pose: its position buffer is the rig's live copy of the rest positions.
-function skinMesh(rig, { pos, index, rings, segs, startPole = false }, by) {
-  const g = new THREE.BufferGeometry();
+function skinMesh(rig, { pos, index, rings, segs, startPole = false }, by, part) {
+  const g = new THREE.BufferGeometry(), tris = index ?? gridIndex(rings, segs, true, true, startPole);
   g.setAttribute('position', new THREE.BufferAttribute(track(rig, pos, by), 3));
-  g.setIndex(new THREE.BufferAttribute(index ?? gridIndex(rings, segs, true, true, startPole), 1));
+  g.setIndex(new THREE.BufferAttribute(tris, 1));
+  g.setAttribute('aSkin', new THREE.BufferAttribute(skinTraits(pos, tris, part, rig.joints, by.kind ? by : null, SKIN), 3));
   g.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(pos.length), 3));
   g.setAttribute('aRest', new THREE.BufferAttribute(pos, 3));
   shadeSkin(g);
   g.boundingSphere = BOUNDS; // fixed: the pose moves it
   const m = new THREE.Mesh(g, skinMat);
+  m.renderOrder = DRAW.skin;
   m.castShadow = m.receiveShadow = true;
   return m;
 }
@@ -456,10 +467,10 @@ function buildFigure(shape, mods) {
   const rig = makeRig(body);
   const group = new THREE.Group();
   const skin = [
-    ...body.legs.flatMap((leg) => [legSkin(leg), ...toeSkins(leg)].map((g) => skinMesh(rig, g, leg))),
-    skinMesh(rig, buildTorso(body), BLEND),
-    ...body.arms.flatMap((arm) => armSkins(arm).map((g) => skinMesh(rig, g, arm))),
-    skinMesh(rig, buildHead(body), ROOT),
+    ...body.legs.flatMap((leg) => [legSkin(leg), ...toeSkins(leg)].map((g, k) => skinMesh(rig, g, leg, k ? 'toe' : 'leg'))),
+    skinMesh(rig, buildTorso(body), BLEND, 'torso'),
+    ...body.arms.flatMap((arm) => armSkins(arm).map((g, k) => skinMesh(rig, g, arm, k ? 'hand' : 'arm'))),
+    skinMesh(rig, buildHead(body), ROOT, 'head'),
   ];
   group.add(...skin);
 
@@ -500,6 +511,7 @@ const X_AXIS = new THREE.Vector3(1, 0, 0);
 // Static pose: skin, choker and cloth anchors move together; a cloth added since the last call catches up.
 function setPose(f, next) {
   if (!applyPose(f.rig, f.cloths, next)) return;
+  invalidate();
   for (const m of f.skin) shadeSkin(m.geometry);
   for (const m of f.clothMeshes) m.userData.dirty = true;
   poseChoker(f);
@@ -572,15 +584,23 @@ function stopGrab() {
   if (!drag) return;
   endGrab(drag.cloth);
   drag = null;
+  controls.enabled = true;
+  controls.enableRotate = true;
 }
 
 // Capture phase so this runs before OrbitControls sees the event.
+// A mouse grab turns the orbit controls off. A touch grab only stops them rotating, so they keep tracking the
+// finger: a second finger then lets go of the cloth and pinches, and a finger that lands while the view is already
+// orbiting or pinching never grabs.
 canvas.addEventListener('pointerdown', (e) => {
-  if (e.button !== 0 || drag) return;
+  if (e.pointerType === 'touch') {
+    if (drag) { stopGrab(); return; }
+    if (!e.isPrimary) return;
+  } else if (e.button !== 0 || drag) return;
   const h = pick(e);
   if (!h || !startGrab(h.object.userData.cloth, h.point)) return;
-  controls.enabled = false;
-  canvas.setPointerCapture(e.pointerId);
+  if (e.pointerType === 'touch') controls.enableRotate = false;
+  else { controls.enabled = false; canvas.setPointerCapture(e.pointerId); }
   drag.pointerId = e.pointerId;
   plane.setFromNormalAndCoplanarPoint(camera.getWorldDirection(tmpV), h.point);
   canvas.style.cursor = 'grabbing';
@@ -665,6 +685,7 @@ const optionButtons = {};
 const SLIDERS = ['thigh', 'glute', 'chest'];
 
 function rebuild() {
+  invalidate();
   stopGrab(); controls.enabled = true;
   if (fig) disposeFigure(fig);
   fig = buildFigure(BODIES[settings.body], { thigh: settings.thigh, glute: settings.glute, chest: settings.chest });
@@ -677,6 +698,7 @@ function rebuild() {
 const showSlider = (key) => { $(key + 'Val').textContent = `${Math.round($(key).value)}%`; };
 
 function apply(key, id) {
+  invalidate();
   if (SLIDERS.includes(key)) {
     if (!Number.isFinite(id)) return false;
     settings[key] = Math.min(Math.max(id, 0), 1);
@@ -760,13 +782,24 @@ for (const [key, opt] of Object.entries(OPTIONS)) {
 }
 
 // --- Loop ---
+// The canvas resizes with the window and, on small screens, when the control sheet opens or closes above it.
 function resize() {
   const w = canvas.clientWidth, h = canvas.clientHeight;
   renderer.setSize(w, h, false);
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
 }
-addEventListener('resize', resize);
+// Observer callbacks run after this frame's draw, and setSize clears the canvas, so draw again here or the
+// frame shows blank.
+new ResizeObserver(() => {
+  resize();
+  if (fig) { renderer.render(scene, camera); stale = false; }
+}).observe(canvas);
+$('sheetToggle').addEventListener('click', () => {
+  const open = $('panel').classList.toggle('open');
+  $('sheetToggle').setAttribute('aria-expanded', String(open));
+});
+for (const type of ['input', 'change', 'click']) $('panel').addEventListener(type, invalidate, true);
 resize();
 
 // The view rises with the root, low-passed, so a jump stays framed without the camera bobbing every step.
@@ -775,11 +808,12 @@ function frameView(dt) {
   const next = followView(viewLift, fig.rig.pose.root.y, dt), d = next - viewLift;
   viewLift = next;
   camera.position.y += d; controls.target.y += d;
+  if (Math.abs(d) > 1e-6) invalidate(); // the follow decays forever; under a micron it is not worth a frame
 }
 
 let simMs = 0;
 function syncStepped(m, moved) {
-  if (moved || m.userData.dirty) syncMesh(m);
+  if (moved || m.userData.dirty) { syncMesh(m); invalidate(); }
   m.userData.dirty = false;
 }
 function advance(dt) {
@@ -817,18 +851,17 @@ function advance(dt) {
 }
 
 const clock = new THREE.Clock();
-const STEP = 1 / 60;
+const STEP = LOOP.step;
 let fps = 60, lastStats = 0, acc = 0;
 function frame() {
   const raw = clock.getDelta();
-  // Fixed 60 Hz physics steps: the solver always sees the same dt, and a
-  // background tab can never cause more than a few catch-up steps.
-  acc += Math.min(raw, 0.1);
-  let steps = 0;
-  for (; acc >= STEP && steps < 3; steps++, acc -= STEP) advance(STEP);
-  if (steps === 3) acc = 0;
+  // Fixed 60 Hz physics steps: the solver always sees the same dt. A slow device gets no catch-up steps, so it
+  // slows the motion instead of dropping frames.
+  const plan = planSteps(acc, raw, simMs);
+  acc = plan.acc;
+  for (let s = 0; s < plan.steps; s++) advance(STEP);
   controls.update();
-  renderer.render(scene, camera);
+  if (stale) { renderer.render(scene, camera); stale = false; }
   if (raw > 0) fps += (1 / raw - fps) * 0.05;
   if (clock.elapsedTime - lastStats > 0.5) {
     lastStats = clock.elapsedTime;
