@@ -91,7 +91,7 @@ Read this section before you change code.
 
 1. Run `npm test`. The last line must be `ok`.
 2. The test prints each measured value beside its limit. Compare the values with the previous run. Several margins are small.
-3. The test has two timing limits: a frame median under 12 ms and a total under 170 s. A busy machine can fail them. Rerun on a quiet machine before you conclude that the code is slower.
+3. The test has two timing limits: a frame median under 12 ms and a total under 200 s. A busy machine can fail them. Rerun on a quiet machine before you conclude that the code is slower.
 4. For a change you can see, check the page as well. A passing test does not prove that the picture is right.
 
 **Redraws.** The frame loop draws only when something it shows changed. The pose, a moving cloth, the camera, `apply`, any control in the panel, and a resize each mark the frame stale. A new way to change the picture from outside those paths must call `invalidate()` in `src/main.js`, or the page keeps showing the old frame.

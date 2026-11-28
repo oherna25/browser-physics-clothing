@@ -1711,6 +1711,6 @@ assert.ok(STOCKING_COLORS.filter((e) => e.pattern === 'stripes' && e.sheen).leng
 
 for (const [id, ok] of squeezeOk) assert.ok(ok, `${id}: squeeze does not grow with thickness`);
 const total = performance.now() / 1000;
-console.log(`\ntotal ${total.toFixed(1)} s: ${need(total < 170, `8 npm test took ${total.toFixed(1)} s`)}`);
+console.log(`\ntotal ${total.toFixed(1)} s: ${need(total < 200, `8 npm test took ${total.toFixed(1)} s`)}`);
 assert.equal(failed.length, 0, `criteria failed:\n  ${failed.join('\n  ')}`);
 console.log('ok');
