@@ -593,8 +593,14 @@ export const MOTION_BLEND = 0.3;
 // and `lift` is the share of its colour it shows unlit, as backdrop lights would keep the wall away from the key
 // from going murky.
 // contact: how strongly the feet and shins darken the floor's ambient light.
+// The frame loop. step: the fixed physics step, seconds. maxDelta: the most elapsed time one frame adds, so a
+// background tab resumes without a burst. catchUp: the most steps one frame runs. budget: milliseconds of physics a
+// frame may spend catching up; a step slower than half of it gets no catch-up steps.
+export const LOOP = { step: 1 / 60, maxDelta: 0.1, catchUp: 3, budget: 12 };
+
 export const VIEW = {
   fov: 32, camera: [1.43, 1.26, 3.63], target: [0, 0.93, 0],
+  pixelRatio: { max: 2, touch: 1.5 }, // device pixels per CSS pixel, capped lower on touch screens
   follow: { share: 0.5, lag: 0.3 },
   light: [1.2, 2.4, 1.6],
   shadow: { left: -1, right: 1, top: 1.7, bottom: -0.2, near: 1, far: 8 },

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>Elastic Cloth & Stocking Simulator</title>
   <style>
     :root { color-scheme: light; --ink: #23211f; --muted: #6d6862; --line: rgba(35, 33, 31, 0.14); }
@@ -42,14 +42,73 @@
     .swatch { width: 22px; height: 22px; padding: 0; border-radius: 50%; border: 1px solid rgba(35, 33, 31, 0.28); }
     .swatch[aria-pressed="true"] { box-shadow: 0 0 0 2px #faf8f5, 0 0 0 3.5px var(--ink); }
     #stats { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
-    @media (max-width: 520px) { #panel { width: auto; right: 16px; } }
+    .sheet-toggle, .hint-touch { display: none; }
+    @media (pointer: coarse) { .hint-mouse { display: none; } .hint-touch { display: inline; } }
+    /* Phones and tablets: the panel becomes a bottom sheet and the canvas takes the space above it, so the
+       figure stays whole and centred whether the sheet is open or not. Every control is at least 44 px tall. */
+    @media (max-width: 820px), (pointer: coarse) {
+      html, body { overscroll-behavior: none; }
+      body { display: flex; flex-direction: column; height: 100dvh; }
+      canvas { flex: 1 1 0; min-height: 0; height: auto; }
+      #panel {
+        position: relative; top: auto; left: auto; flex: none; width: auto; max-height: none; overflow: visible;
+        padding: 0 0 env(safe-area-inset-bottom); border-width: 1px 0 0; border-radius: 16px 16px 0 0;
+        background: rgba(250, 248, 245, 0.94);
+      }
+      .sheet-toggle {
+        display: flex; align-items: center; gap: 8px; width: 100%; min-height: 52px; padding: 10px 20px 6px;
+        border: 0; border-radius: 16px 16px 0 0; position: relative; text-align: left; touch-action: none;
+      }
+      .sheet-toggle:hover { background: transparent; }
+      .sheet-toggle::before {
+        content: ""; position: absolute; top: 6px; left: 50%; width: 36px; height: 4px; margin-left: -18px;
+        border-radius: 2px; background: rgba(35, 33, 31, 0.22);
+      }
+      .sheet-toggle .sheet-title { flex: 1; font-weight: 600; font-size: 14px; }
+      .sheet-toggle .sheet-more { color: var(--muted); }
+      .sheet-toggle svg { transition: transform 0.2s; }
+      #panel.open .sheet-toggle svg { transform: rotate(180deg); }
+      #sheetBody {
+        display: none; max-height: min(50dvh, 460px); overflow-y: auto; padding: 2px 20px 12px;
+        overscroll-behavior: contain; touch-action: pan-y;
+      }
+      #panel.open #sheetBody { display: block; }
+      #sheetBody > h1 { display: none; }
+      button { min-height: 44px; touch-action: manipulation; }
+      .seg { gap: 6px; }
+      .swatches { gap: 6px; }
+      .swatch { width: 44px; height: 44px; }
+      label.row { margin-bottom: 4px; }
+      label.row input { height: 44px; touch-action: pan-y; }
+      .checks { margin: 0 0 8px; gap: 20px; }
+      .checks label { min-height: 44px; }
+      .checks input { width: 22px; height: 22px; }
+      .foot { min-height: 56px; }
+      .foot button { min-width: 88px; }
+    }
+    /* A phone on its side has no height to spare, so the open sheet becomes a column on the right. */
+    @media (max-width: 820px) and (max-height: 500px) and (orientation: landscape),
+      (pointer: coarse) and (max-height: 500px) and (orientation: landscape) {
+      body:has(#panel.open) { flex-direction: row; }
+      body:has(#panel.open) canvas { height: 100%; min-width: 0; }
+      #panel.open { display: flex; flex-direction: column; width: 320px; border-width: 0 0 0 1px; border-radius: 0; }
+      #panel.open .sheet-toggle { border-radius: 0; }
+      #panel.open .sheet-toggle::before { display: none; }
+      #panel.open #sheetBody { flex: 1 1 0; min-height: 0; max-height: none; }
+      #panel.open .sheet-toggle svg { transform: rotate(90deg); }
+    }
   </style>
 </head>
 <body>
   <canvas id="view"></canvas>
   <div id="panel">
+    <button id="sheetToggle" class="sheet-toggle" type="button" aria-expanded="false" aria-controls="sheetBody">
+      <span class="sheet-title">Cloth & Stocking Simulator</span><span class="sheet-more">Controls</span>
+      <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M3 9l4-4 4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" /></svg>
+    </button>
+    <div id="sheetBody">
     <h1>Cloth & Stocking Simulator</h1>
-    <p>Drag the fabric to pull it. Drag the background to orbit, scroll to zoom.</p>
+    <p><span class="hint-mouse">Drag the fabric to pull it. Drag the background to orbit, scroll to zoom.</span><span class="hint-touch">Drag the fabric to pull it. Drag the background to orbit, pinch to zoom.</span></p>
     <div id="options"></div>
     <div id="build">
       <label class="row"><span>Thigh</span><span id="thighVal"></span>
@@ -72,6 +131,7 @@
       <label><input id="skirt" type="checkbox" checked /> Skirt</label>
     </div>
     <div class="foot"><button id="reset">Reset</button><span id="stats"></span></div>
+    </div>
   </div>
   <script type="module" src="/src/main.js"></script>
 </body>
